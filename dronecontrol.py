@@ -1,6 +1,9 @@
 import asyncio
+import numpy as np
 import argparse
 import shlex
+import random
+from typing import Dict
 
 import textual.css.query
 from textual import on
@@ -28,58 +31,76 @@ class ArgParser(argparse.ArgumentParser):
 
 # DUMMY STUFF #
 
-import random
-
-
-class DummyDrone:
+class Drone:
     def __init__(self, drone_id, connection):
         self.id = drone_id
         self.connection = connection
-        self.arm = False
-        self.offboard = False
+        self.drone_ref = None
+        self.is_armed = False
+        self.offboard_mode = False
         asyncio.create_task(self._fail_offboard())
 
     async def _fail_offboard(self):
         while True:
             until_next = random.uniform(10, 15)
             duration = random.uniform(3, 5)
-            if self.offboard:
-                self.offboard = False
+            if self.offboard_mode:
+                self.offboard_mode = False
                 await asyncio.sleep(duration)
-                self.offboard = True
+                await self.offboard()
             await asyncio.sleep(until_next)
 
+    @classmethod
+    async def connect(cls, name, address):
+        #drone = Craft(name, address)
+        con_delay = random.uniform(3, 10)
+        con_success = random.uniform(0, 1)
+        con_success_rate = 0.5
+        await asyncio.sleep(con_delay)
+        if con_success < con_success_rate:
+            return cls(name, True)
+        else:
+            raise RuntimeError(f"Failed to connect to drone!")
 
-async def _drone_connect(name, address):
-    #drone = Craft(name, address)
-    con_delay = random.uniform(3, 10)
-    con_success = random.uniform(0, 1)
-    con_success_rate = 0.5
-    if con_success < con_success_rate:
-        drone = DummyDrone(name, True)
-        return drone
-    else:
-        raise RuntimeError("Failed to connect to drone!")
+    async def arm(self):
+        #drone.arm()
+        self.is_armed = True
 
+    async def disarm(self):
+        #drone.disarm()
+        self.is_armed = False
 
-async def _drone_arm(drone):
-    #drone.arm()
-    drone.arm = True
+    async def offboard(self):
+        if not self.is_armed:
+            raise RuntimeError("Can't offboard a disarmed drone!")
+        self.offboard_mode = True
 
+    async def _drone_change_mode(self):
+        raise NotImplementedError
 
-async def _drone_disarm(drone):
-    #drone.disarm()
-    drone.arm = False
+    async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
+        #self.drone_ref.add_action(actions.point.FlyToPoint(point, tolerance=tolerance))
+        await asyncio.sleep(random.uniform(0.1, 3))
+        if not self.is_armed:
+            raise RuntimeError("Can't fly an unarmed drone!")
+        return 1
 
+    async def fly_circle(self, velocity, radius, angle, direction):
+        #self.drone_ref.add_action(actions.circle.Circle(velocity=velocity, radius=radius, angle=angle,
+        #                                                direction=direction))
+        await asyncio.sleep(random.uniform(0.1, 3))
+        if not self.is_armed:
+            raise RuntimeError("Can't fly an unarmed drone!")
+        return 1
 
-async def _drone_offboard(drone):
-    if not drone.arm:
-        raise RuntimeError("Can't offboard a disarmed drone!")
-    drone.offboard = True
+    async def land(self):
+        await asyncio.sleep(random.uniform(0.1, 3))
+        if not self.is_armed:
+            raise RuntimeError("Can't land an unarmed drone!")
+        await asyncio.sleep(random.uniform(3, 10))
+        await self.disarm()
+        return 1
 
-
-async def _drone_change_mode():
-    pass
 
 # END DUMMY STUFF #
 
@@ -88,9 +109,9 @@ class DroneManager(App):
 
     STATUS_REFRESH_RATE = 4
 
-    BINDINGS = [
-        ("k", "stop", "STOP ALL")
-    ]
+#    BINDINGS = [
+#        ("k", "stop", "STOP ALL")
+#    ]
 
     CSS = """
 .text {
@@ -104,24 +125,40 @@ class DroneManager(App):
 
     def __init__(self):
         super().__init__()
-        self.drones = {}
+        self.drones: Dict[str, Drone] = {}
         self.running_tasks = set()
-        #self.loop = asyncio.get_event_loop()
         self.stop_execution = False
-        self.refresh_task = None
 
         self.parser = ArgParser(
             description="Interactive command line interface to connect and control multiple drones")
-        subparsers = self.parser.add_subparsers(title="command", description="Command to execute.", dest="command")
+        subparsers = self.parser.add_subparsers(title="command",
+                                                description="Command to execute.", dest="command")
         connect_parser = subparsers.add_parser("connect")
-        connect_parser.add_argument("drone", help="Name for the drone.")
-        connect_parser.add_argument("address", help="Connection string. Something like udp://:14550")
+        connect_parser.add_argument("drone", type=str, help="Name for the drone.")
+        connect_parser.add_argument("address", type=str,
+                                    help="Connection string. Something like udp://:14550")
         arm_parser = subparsers.add_parser("arm")
-        arm_parser.add_argument("drone", help="Drone to arm")
+        arm_parser.add_argument("drone", type=str, help="Drone to arm")
         disarm_parser = subparsers.add_parser("disarm")
-        disarm_parser.add_argument("drone", help="Drone to arm")
+        disarm_parser.add_argument("drone", type=str, help="Drone to arm")
         offboard_parser = subparsers.add_parser("offboard")
-        offboard_parser.add_argument("drone", help="Drone to put into offboard mode")
+        offboard_parser.add_argument("drone", type=str, help="Drone to put into offboard mode")
+        fly_to_parser = subparsers.add_parser("flyto")
+        fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
+        fly_to_parser.add_argument("x", type=float, help="Target x coordinate")
+        fly_to_parser.add_argument("y", type=float, help="Target y coordinate")
+        fly_to_parser.add_argument("z", type=float, help="Target z coordinate")
+        fly_to_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.5,
+                                   help="Position tolerance")
+        fly_circle_parser = subparsers.add_parser("flycircle")
+        fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
+        fly_circle_parser.add_argument("vel", type=float, help="Target velocity")
+        fly_circle_parser.add_argument("radius", type=float, help="Radius of the circle")
+        fly_circle_parser.add_argument("angle", type=float, help="Angle (?) of the circle")
+        fly_circle_parser.add_argument("dir", type=str, choices=["cw", "ccw"],
+                                       help="Direction of the circle")
+        land_parser = subparsers.add_parser("land")
+        land_parser.add_argument("drone", type=str, help="Drone to land")
         exit_parser = subparsers.add_parser("exit")
 
     def run(self, *args, **kwargs):
@@ -129,7 +166,7 @@ class DroneManager(App):
 
     @on(Input.Submitted, "#cli")
     def cli(self, message):
-        output = self.query_one("#output")
+        output = self.query_one("#output", expect_type=Log)
         value = message.value
         message.control.clear()
         try:
@@ -137,19 +174,28 @@ class DroneManager(App):
         except ValueError as e:
             output.write_line(repr(e))
             return
-        if args.command == "connect":
-            task = asyncio.create_task(self.connect_to_drone(args.drone, args.address), name=args.drone)
-            self.running_tasks.add(task)
-            task.add_done_callback(self.connect_callback)
-        if args.command == "arm":
-            asyncio.create_task(self.arm(args.drone))
-        if args.command == "disarm":
-            asyncio.create_task(self.disarm(args.drone))
-        if args.command == "offboard":
-            asyncio.create_task(self.offboard(args.drone))
-        if args.command == "exit":
-            self.stop_execution = True
-            self.action_stop()
+        try:
+            if args.command == "connect":
+                task = asyncio.create_task(self.connect_to_drone(args.drone, args.address), name=args.drone)
+                self.running_tasks.add(task)
+                task.add_done_callback(self.connect_callback)
+            if args.command == "arm":
+                asyncio.create_task(self.arm(args.drone))
+            if args.command == "disarm":
+                asyncio.create_task(self.disarm(args.drone))
+            if args.command == "offboard":
+                asyncio.create_task(self.offboard(args.drone))
+            if args.command == "flyto":
+                asyncio.create_task(self.fly_to(args.drone, args.x, args.y, args.z, args.tolerance))
+            if args.command == "flycircle":
+                asyncio.create_task(self.fly_circle(args.drone, args.vel, args.radius, args.angle, args.dir))
+            if args.command == "land":
+                asyncio.create_task(self.land(args.drone))
+            if args.command == "exit":
+                self.stop_execution = True
+                self.action_stop()
+        except Exception as e:
+            output.write_line(repr(e))
 
     def connect_callback(self, task):
         drone = task.result()
@@ -158,48 +204,77 @@ class DroneManager(App):
         self.running_tasks.discard(task)
 
     async def connect_to_drone(self, name, address):
-        output = self.query_one("#output")
+        output = self.query_one("#output", expect_type=Log)
         output.write_line(f"Connecting to drone {name}...")
         try:
-            drone = await _drone_connect(name, address)
+            drone = await Drone.connect(name, address)
             output.write_line(f"Connected to drone {name}!")
             return drone
         except RuntimeError:
-            output.write_line("Failed to connect to drone!")
+            output.write_line(f"Failed to connect to {name}!")
 
     async def arm(self, name):
-        output = self.query_one("#output")
-        output.write_line(f"Arming drone {name}")
+        output = self.query_one("#output", expect_type=Log)
+        output.write_line(f"Arming drone {name}.")
         try:
-            drone = self.drones[name]
-            await _drone_arm(drone)
+            await self.drones[name].arm()
             output.write_line(f"{name} armed!")
         except KeyError:
-            output.write_line(f"No drone named {name}")
+            output.write_line(f"No drone named {name}!")
         except Exception as e:
             output.write_line(repr(e))
 
     async def disarm(self, name):
-        output = self.query_one("#output")
-        output.write_line(f"Disarming drone {name}")
+        output = self.query_one("#output", expect_type=Log)
+        output.write_line(f"Disarming drone {name}.")
         try:
-            drone = self.drones[name]
-            await _drone_disarm(drone)
+            await self.drones[name].disarm()
             output.write_line(f"{name} disarmed!")
         except KeyError:
-            output.write_line(f"No drone named {name}")
+            output.write_line(f"No drone named {name}!")
         except Exception as e:
             output.write_line(repr(e))
 
     async def offboard(self, name):
-        output = self.query_one("#output")
-        output.write_line(f"Offboarding drone {name}")
+        output = self.query_one("#output", expect_type=Log)
+        output.write_line(f"Offboarding drone {name}.")
         try:
-            drone = self.drones[name]
-            await _drone_offboard(drone)
+            await self.drones[name].offboard()
             output.write_line(f"{name} in offboard mode!")
         except KeyError:
-            output.write_line(f"No drone named {name}")
+            output.write_line(f"No drone named {name}!")
+        except Exception as e:
+            output.write_line(repr(e))
+
+    async def fly_to(self, name, x, y, z, tol=0.5):
+        point = np.array([x, y, z])
+        output = self.query_one("#output", expect_type=Log)
+        try:
+            await self.drones[name].fly_to_point(point, tolerance=tol)
+            output.write_line(f"Sending {name} to point {point}.")
+        except KeyError:
+            output.write_line(f"No drone named {name}!")
+        except Exception as e:
+            output.write_line(repr(e))
+
+    async def fly_circle(self, name, velocity, radius, angle, direction):
+        output = self.query_one("#output", expect_type=Log)
+        try:
+            await self.drones[name].fly_circle(velocity, radius, angle, direction)
+            output.write_line(f"{name} flying in a circle.")
+        except KeyError:
+            output.write_line(f"No drone named {name}!")
+        except Exception as e:
+            output.write_line(repr(e))
+
+    async def land(self, name):
+        output = self.query_one("#output", expect_type=Log)
+        try:
+            output.write_line(f"Landing drone {name}.")
+            await self.drones[name].land()
+            output.write_line(f"{name} landed.")
+        except KeyError:
+            output.write_line(f"No drone named {name}!")
         except Exception as e:
             output.write_line(repr(e))
 
@@ -217,7 +292,7 @@ class DroneManager(App):
         output = None
         while not output:
             try:
-                output = self.query_one("#status")
+                output = self.query_one("#status", expect_type=Static)
             except textual.css.query.NoMatches:
                 await asyncio.sleep(0.5)
         while True:
@@ -230,7 +305,10 @@ class DroneManager(App):
                 drone = self.drones[name]
                 if len(name) > 10:
                     name = name[:7] + "..."
-                status_string += "{:<10}    {:>5}   {:>5}".format(str(name), str(drone.arm), str(drone.offboard)) + "\n"
+                status_string += "{:<10}    {:>5}   {:>5}".format(str(name),
+                                                                  str(drone.is_armed),
+                                                                  str(drone.offboard_mode),
+                                                                  ) + "\n"
             output.update(status_string)
             await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
 
