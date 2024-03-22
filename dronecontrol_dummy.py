@@ -30,9 +30,9 @@ class DummyDrone(Drone):
             await asyncio.sleep(until_next)
 
     async def connect(self, connection_address):
-        con_delay = random.uniform(3, 10)
+        con_delay = random.uniform(1, 6)
         con_success = random.uniform(0, 1)
-        con_success_rate = 0.5
+        con_success_rate = 0.8
         await asyncio.sleep(con_delay)
         if con_success < con_success_rate:
             self.is_connected = True
@@ -62,25 +62,31 @@ class DummyDrone(Drone):
         if not self.is_armed:
             raise RuntimeError("Can't offboard a disarmed drone!")
         self.dummy_offboard = True
+        return True
 
     async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
         await asyncio.sleep(random.uniform(1, 10))
         if not self.is_armed:
             raise RuntimeError("Can't fly an unarmed drone!")
+        return True
 
     async def fly_circle(self, velocity, radius, angle, direction):
         await asyncio.sleep(random.uniform(1, 10))
         if not self.is_armed:
             raise RuntimeError("Can't fly an unarmed drone!")
+        return True
 
     async def land(self):
         await asyncio.sleep(random.uniform(1, 10))
         if not self.is_armed:
             raise RuntimeError("Can't land an unarmed drone!")
+        return True
 
     async def stop(self):
         if self.is_armed:
             await self.land()
+            await self.disarm()
+        return True
 
     async def kill(self):
         raise NotImplementedError
