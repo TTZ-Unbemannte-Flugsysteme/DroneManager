@@ -12,7 +12,7 @@ from textual.app import App
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, Log, Static
 
-from mavsdk import System
+from drones import Drone, DroneMAVSDK, DummyMAVDrone
 
 # Must start mavsdk_server first, with arguments: mavsdk_server_bin.exe -p 50040 udp://:14540
 # -p port : The port used by the computer to connect to the server
@@ -39,91 +39,15 @@ class ArgParser(argparse.ArgumentParser):
             raise ArgumentParserError(message)
 
 
-class Drone:
-    def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051):
-        self.name = name
-        self.server_addr = mavsdk_server_address
-        self.server_port = mavsdk_server_port
-        self.connection_address = None
-        self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port)
-        self.is_connected = False
-        self.is_armed = False
-
-    # TODO: Implement a mission manager/queue thing.
-    async def connect(self, connection_address):
-        self.connection_address = connection_address
-        await self.system.connect(system_address=self.connection_address)
-        async for state in self.system.core.connection_state():
-            if state.is_connected:
-                await self.schedule_update_tasks()
-                return True
-        return False
-
-    async def schedule_update_tasks(self):
-        asyncio.create_task(self._connect_check())
-        asyncio.create_task(self._arm_check())
-
-    async def _connect_check(self):
-        async for state in self.system.core.connection_state():
-            self.is_connected = state.is_connected
-
-    async def _arm_check(self):
-        async for arm in self.system.telemetry.armed():
-            self.is_armed = arm
-
-    @property
-    async def is_offboard(self):
-        try:
-            offboard_status = await asyncio.wait_for(self.system.offboard.is_active(), .1)
-            return offboard_status
-        except TimeoutError:
-            return False
-
-    async def arm(self):
-        if not self.is_armed:
-            try:
-                await self.system.action.arm()
-                return True
-            except Exception as e:  # add exception later
-                print(e)
-        else:
-            return False
-
-    async def disarm(self):
-        if self.is_armed:
-            try:
-                await self.system.action.disarm()
-                return True
-            except Exception as e:  # add exception later
-                print(e)
-        else:
-            return False
-
-    async def offboard(self):
-        await self.system.offboard.start()
-        return True
-
-    async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
-        raise NotImplementedError
-
-    async def fly_circle(self, velocity, radius, angle, direction):
-        raise NotImplementedError
-
-    async def land(self):
-        raise NotImplementedError
-
-    async def stop(self):
-        # land, disarm then stop?
-        await self.disarm()
-        return True
-
-    async def kill(self):
-        raise NotImplementedError
-
-
 class DroneManager(App):
-    # TODO: Convert all the 'action' functions to use _multiple_drones/_single_drone templates, except stop and connect
-    # TODO: Figure out how stop should work
+    # TODO: Test with multiple (simulated) drones.
+    # TODO: Test with actual drones.
+    # TODO: Figure out how stop should work.
+    # TODO: Put drones into their separate file.
+    # TODO: Have the whole parser as a separate class.
+    # TODO: Print a pretty usage/command overview thing somewhere.
+    # TODO: Have flightmode change instead of offboard, manual etc functions.
+    # TODO: Start MAVSDK servers automatically for each connected drone.
 
     # How often the status screen is updated.
     STATUS_REFRESH_RATE = 5
@@ -138,14 +62,19 @@ class DroneManager(App):
 .text {
     text-style: bold;
 }
-    
-#status {
+
+.evenvert {
+    height: 1fr;
+}
+
+#sidebar {
     width: 50;
 }
 """
 
-    def __init__(self):
+    def __init__(self, drone_class):
         super().__init__()
+        self._drone_class = drone_class
         self.drones: Dict[str, Drone] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
@@ -165,7 +94,8 @@ class DroneManager(App):
                                          "automatically. Use this only if you already have a server for this drone "
                                          "running (for example on another machine). Default None")
         connect_parser.add_argument("-sp", "--server_port", type=int, default=50051,
-                                    help="Port for the mavsdk server. Default 50051.")
+                                    help="Port for the mavsdk server. Default 50051. Ignored if server_address is "
+                                         "None.")
         arm_parser = subparsers.add_parser("arm")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
 
@@ -237,12 +167,14 @@ class DroneManager(App):
     async def connect_to_drone(self, name, mavsdk_server_address, mavsdk_server_port, drone_address):
         output = self.query_one("#output", expect_type=Log)
         output.write_line(f"Trying to connect to drone {name}...")
-        try:
-            async with self.drone_lock:
+        async with self.drone_lock:
+            if not mavsdk_server_address:
+                mavsdk_server_port = 50051  # TODO: Should not be fixed but generated automatically
+            try:
                 if name in self.drones:
                     output.write_line(f"A drone called {name} already exists. Each drone must have a unique name.")
                     return False
-                drone = Drone(name, mavsdk_server_address, mavsdk_server_port)
+                drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 connected = await asyncio.wait_for(drone.connect(drone_address), self.CONNECT_TIMEOUT)
                 if connected:
                     output.write_line(f"Connected to drone {name}!")
@@ -252,12 +184,12 @@ class DroneManager(App):
                     output.write_line(f"Failed to connect to drone {name}!")
                     del drone
                     return False
-        except TimeoutError:
-            output.write_line(f"Connection attempts to {name} timed out!")
-            del drone
-            return False
+            except TimeoutError:
+                output.write_line(f"Connection attempts to {name} timed out!")
+                del drone
+                return False
 
-    async def _multiple_drone_action(self, action, names, start_string, success_string, fail_string,):
+    async def _multiple_drone_action(self, action, names, start_string, success_string, fail_string, *args, **kwargs):
         """
 
         :param action:
@@ -272,7 +204,8 @@ class DroneManager(App):
         output = self.query_one("#output", expect_type=Log)
         output.write_line(start_string.format(names))
         try:
-            results = await asyncio.gather(*[action(self.drones[name]) for name in names], return_exceptions=True)
+            results = await asyncio.gather(*[action(self.drones[name], *args, **kwargs) for name in names],
+                                           return_exceptions=True)
             for i, result in enumerate(results):
                 if not result:
                     output.write_line(fail_string.format(names[i]))
@@ -286,18 +219,32 @@ class DroneManager(App):
             output.write_line(repr(e))
 
     async def arm(self, names):
-        await self._multiple_drone_action(Drone.arm, names, "Arming drone(s) {}.", "{} armed!", "{} is already armed!")
+        await self._multiple_drone_action(self._drone_class.arm,
+                                          names,
+                                          "Arming drone(s) {}.",
+                                          "{} armed!",
+                                          "{} is already armed!")
 
     async def disarm(self, names):
-        await self._multiple_drone_action(Drone.disarm, names, "Disarming drone(s) {}.", "{} disarmed!",
+        await self._multiple_drone_action(self._drone_class.disarm,
+                                          names,
+                                          "Disarming drone(s) {}.",
+                                          "{} disarmed!",
                                           "{} is already disarmed!")
 
     async def offboard(self, names):
-        await self._multiple_drone_action(Drone.offboard, names, "Offboarding drone(s) {}.", "{} in offboard mode!",
+        await self._multiple_drone_action(self._drone_class.offboard,
+                                          names,
+                                          "Offboarding drone(s) {}.",
+                                          "{} in offboard mode!",
                                           "Offboarding failed for drone {}!")
 
     async def land(self, names):
-        await self._multiple_drone_action(Drone.land, names, "Landing drone(s) {}.", "{} landed.", "{} couldn't land!")
+        await self._multiple_drone_action(self._drone_class.land,
+                                          names,
+                                          "Landing drone(s) {}.",
+                                          "{} landed.",
+                                          "{} couldn't land!")
 
     async def fly_to(self, name, x, y, z, tol=0.5):
         point = np.array([x, y, z])
@@ -322,11 +269,15 @@ class DroneManager(App):
 
     async def _stop_drone(self, name):
         drone = self.drones[name]
-        await drone.stop()
+        result = await drone.stop()
         self.drones.pop(name)
         del drone
+        return result
 
     async def action_stop(self, names):
+        stop_app = False
+        if not names:
+            stop_app = True
         output = self.query_one("#output", expect_type=Log)
         async with self.drone_lock:
             if not names:
@@ -335,11 +286,13 @@ class DroneManager(App):
                 output.write_line(f"Stopping {names}")
             drones_to_stop = names if names else list(self.drones.keys())
             results = await asyncio.gather(*[self._stop_drone(name) for name in drones_to_stop], return_exceptions=True)
-            for i, result in results:
+            for i, result in enumerate(results):
+                # If one of the drones encounters an excepton
                 if isinstance(result, Exception):
                     output.write_line(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
                                       f"{repr(result)}!")
-            if not names:
+                    stop_app = False
+            if stop_app:
                 await asyncio.sleep(2)  # Beauty pause
                 self.exit()
 
@@ -351,13 +304,13 @@ class DroneManager(App):
                 output = self.query_one("#status", expect_type=Static)
                 log = self.query_one("#output", expect_type=Log)
             except textual.css.query.NoMatches:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
         try:
             while True:
                 status_string = ""
                 status_string += "Drone Status\n"
                 format_string = "{:<10}    {:>9}   {:>5}  {:>8}"
-                header_string = format_string.format("Name", "Connected", "Armed", "Offboard")
+                header_string = format_string.format("Name", "Connected", "Armed", "Mode")
                 status_string += header_string + "\n"
                 status_string += "="*len(header_string) + "\n"
                 for name in list(self.drones.keys()):
@@ -367,7 +320,7 @@ class DroneManager(App):
                     status_string += format_string.format(str(name),
                                                           str(drone.is_connected),
                                                           str(drone.is_armed),
-                                                          str(await drone.is_offboard)) + "\n"
+                                                          str(drone.flightmode)) + "\n"
 
                 output.update(status_string)
                 await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
@@ -382,7 +335,11 @@ class DroneManager(App):
         yield Vertical(
             Horizontal(
                 Log(id="output", classes="text"),
-                Static(id="status", classes="text")
+                Vertical(
+                    Static(id="status", classes="text evenvert"),
+                    Static(id="usage", classes="text evenvert", renderable=self.parser.format_usage()),
+                    id="sidebar",
+                )
             ),
             Input(placeholder="Command line", id="cli")
         )
@@ -403,8 +360,15 @@ class DroneManager(App):
                     return func(inputstr)
             return inner
         sys.stdout.write = decorator(sys.stdout.write)
+        sys.stderr.write = decorator(sys.stderr.write)
 
 
 if __name__ == "__main__":
-    app = DroneManager()
+    start_parser = argparse.ArgumentParser()
+    start_parser.add_argument("-d", "--dummy", action="store_true", help="If set, use a dummy drone class")
+
+    start_args = start_parser.parse_args()
+
+    drone_type = DummyMAVDrone if start_args.dummy else DroneMAVSDK
+    app = DroneManager(drone_type)
     app.run()
