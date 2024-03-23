@@ -8,6 +8,7 @@ from mavsdk import System
 
 
 # TODO: Implement a mission manager/queue thing.
+# TODO: Have a flightmode change function instead of offboard/hold/manual etc. MODES: HOLD,LAND,OFFBOARD
 
 class Drone(ABC):
 

@@ -46,7 +46,6 @@ class DroneManager(App):
     # TODO: Put drones into their separate file.
     # TODO: Have the whole parser as a separate class.
     # TODO: Print a pretty usage/command overview thing somewhere.
-    # TODO: Have flightmode change instead of offboard, manual etc functions.
     # TODO: Start MAVSDK servers automatically for each connected drone.
 
     # How often the status screen is updated.
@@ -223,14 +222,14 @@ class DroneManager(App):
                                           names,
                                           "Arming drone(s) {}.",
                                           "{} armed!",
-                                          "{} is already armed!")
+                                          "{} couldn't be armed!")
 
     async def disarm(self, names):
         await self._multiple_drone_action(self._drone_class.disarm,
                                           names,
                                           "Disarming drone(s) {}.",
                                           "{} disarmed!",
-                                          "{} is already disarmed!")
+                                          "{} couldn't be disarmed!")
 
     async def offboard(self, names):
         await self._multiple_drone_action(self._drone_class.offboard,
