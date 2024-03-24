@@ -1,0 +1,2 @@
+build px4_sitl
+PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 PX4_GT_MODEL_POSE="<pose>" ./build/px4_sitl_default/bin/px4 -i <n>
