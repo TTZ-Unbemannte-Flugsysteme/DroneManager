@@ -40,7 +40,6 @@ class ArgParser(argparse.ArgumentParser):
 
 
 class DroneManager(App):
-    # TODO: Add history to input
     # TODO: Have the whole parser as a separate class.
     # TODO: Print a pretty usage/command overview thing somewhere.
 
@@ -479,6 +478,8 @@ class InputWithHistory(Input):
         if self.history:
             self._decrease_history_cursor()
             self.value = self.history[self._current_history_cursor]
+        if self.history_cursor == 1:
+            self.value = ""
 
     def add_to_history(self, item) -> None:
         # If we add extra entries, overwrite old ones
