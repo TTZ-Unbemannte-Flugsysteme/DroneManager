@@ -440,10 +440,10 @@ class InputWithHistory(Input):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.history = [""]
+        self.history = []
         self.history_cursor = 0     # Shows where in the history we are
-        self.rolling_history_pos = 0
-        self.max_length = 50
+        self.rolling_zero = 0       # Current "0" index. If we had more entries, these get overwritten.
+        self.history_max_length = 50
 
     # Behaviour: Depends on if we are already using history.
     # A new submission is added to the history
@@ -457,29 +457,35 @@ class InputWithHistory(Input):
 
     @property
     def _current_history_cursor(self):
-        return (self.rolling_history_pos - self.history_cursor) % min(len(self.history), self.max_length)
+        return (self.rolling_zero - self.history_cursor) % min(len(self.history), self.history_max_length)
 
     def _increase_history_cursor(self):
-        if self.history_cursor < self.max_length - 1 and self.history_cursor < len(self.history) - 1:
+        if self.history_cursor < self.history_max_length and self.history_cursor < len(self.history):
             self.history_cursor += 1
 
     def _decrease_history_cursor(self):
-        if self.history_cursor > 0:
+        if self.history_cursor > 1:
             self.history_cursor -= 1
 
+    def _increase_history_rolling_pos(self):
+        self.rolling_zero = (self.rolling_zero + 1) % self.history_max_length
+
     def action_history_prev(self) -> None:
-        self._increase_history_cursor()
-        self.value = self.history[self._current_history_cursor]
+        if self.history:
+            self._increase_history_cursor()
+            self.value = self.history[self._current_history_cursor]
 
     def action_history_rec(self) -> None:
-        self._decrease_history_cursor()
-        self.value = self.history[self._current_history_cursor]
+        if self.history:
+            self._decrease_history_cursor()
+            self.value = self.history[self._current_history_cursor]
 
     def add_to_history(self, item) -> None:
         # If we add extra entries, overwrite old ones
-        if len(self.history) == self.max_length:
-            # Entry to be overriden is at rolling_history_pos
-            self.history[self.rolling_history_pos] = item
+        if len(self.history) == self.history_max_length:
+            # Entry to be overriden is at rolling_zero
+            self.history[self.rolling_zero] = item
+            self._increase_history_rolling_pos()
         else:
             self. history.append(item)
 
