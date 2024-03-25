@@ -31,13 +31,15 @@ class Battery:
         return f"Remain: {self.remaining}   Consumed: {self.consumed}   V: {self.voltage}   T: {self.temperature}"
 
 
-class Drone(ABC):
+class Drone(ABC, threading.Thread):
 
     VALID_FLIGHTMODES = []
 
     def __init__(self, name, *args, **kwargs):
+        threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
+        self.start()
 
     @property
     @abstractmethod
@@ -176,13 +178,12 @@ def parse_address(string=None, scheme=None, host=None, port=None, return_string=
         return scheme, host, port
 
 
-class DroneMAVSDK(Drone, threading.Thread):
+class DroneMAVSDK(Drone):
 
     VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff"]
     # This attribute is for checking which flight modes can be changed into manually
 
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=160):
-        threading.Thread.__init__(self)
         Drone.__init__(self, name)
         self.compid = compid
         self.system = None
@@ -198,7 +199,6 @@ class DroneMAVSDK(Drone, threading.Thread):
         self._velocity: np.ndarray = np.zeros((3,))         # NED
         self._attitude: np.ndarray = np.zeros((3,))         # Roll, pitch and yaw, with positives right up and right.
         self._batteries: Dict[int, Battery] = {}
-        self.start()
 
     @property
     def is_connected(self) -> bool:
