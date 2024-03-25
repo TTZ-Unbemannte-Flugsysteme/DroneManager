@@ -10,38 +10,25 @@ import textual.css.query
 from textual import on
 from textual.app import App
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, Log, Static
-from textual.binding import Binding
+from textual.widgets import Footer, Header, Log, Static
 
+from widgets import InputWithHistory
 from drones import Drone, DroneMAVSDK, DummyMAVDrone, parse_address
+from betterparser import ArgParser
 
 # Must start mavsdk_server first, with arguments: mavsdk_server_bin.exe -p <serverport> udp://:<droneport>
 # Each mavsdk server can handle exactly one drone and there is no possibility of disconnecting or connecting to another
 # drone (unless both drones use the same connection and whichever connected first dies)
 
-MAV_SERVER_BINARY = "mavsdk_server_bin.exe"
-
-
-# TURNS OUT ARGPARSE IS ARSE, DOESN'T THROW EXCEPTIONS AND JUST QUITS INSTEAD, LMAO
-class ArgumentParserError(Exception):
-    pass
-
-
-class ArgParser(argparse.ArgumentParser):
-    def error(self, message):
-        if "invalid choice" in message:
-            raise ValueError(message)
-        elif "arguments are required" in message:
-            raise ValueError(message)
-        elif "unrecognized argument" in message:
-            raise ValueError(message)
-        else:
-            raise ArgumentParserError(message)
-
 
 class DroneManager(App):
-    # TODO: Have the whole parser as a separate class.
+    # TODO: Figure out multiple real drones
+    # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health" checks, check what else
+    # TODO: Put a bunch of the code into their associated widgets and put those into their own files (i.e. cli into the
+    #  tweaked input)
     # TODO: Print a pretty usage/command overview thing somewhere.
+
+    # TODO: Safety checks, such as vortex ring state avoidance.
 
     # TODO: Look again at offboard setpoint setting.
 
@@ -53,8 +40,11 @@ class DroneManager(App):
     # TODO: Handle mavsdk errors (such as offboard error) better. Currently prints either a DENIED message with little
     #   information or an even more useless "<ErrorObject at 0x...>".
 
+    # NOTES: Look into sysid (not compid) for mavsdk server. This argument might be necessary to untangle communication.
+    #   It seems that PX4 gazebo instances MAVlink stuff is not independent, they do some kind of dumb stuff
+
     # How often the status screen is updated.
-    STATUS_REFRESH_RATE = 5
+    STATUS_REFRESH_RATE = 20
 
 #    BINDINGS = [
 #        ("k", "stop", "STOP ALL")
@@ -83,6 +73,8 @@ class DroneManager(App):
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self.drone_lock = asyncio.Lock()
         self._kill_counter = 0  # Require kill all to be entered twice
+
+        self.compid = 160
 
         self.parser = ArgParser(
             description="Interactive command line interface to connect and control multiple drones")
@@ -145,7 +137,7 @@ class DroneManager(App):
     def run(self, *args, **kwargs):
         super().run(*args, **kwargs)
 
-    @on(Input.Submitted, "#cli")
+    @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
         output = self.query_one("#output", expect_type=Log)
         value = message.value
@@ -196,7 +188,7 @@ class DroneManager(App):
 
     async def connect_to_drone(self,
                                name: str,
-                               mavsdk_server_address: str,
+                               mavsdk_server_address: str | None,
                                mavsdk_server_port: int,
                                drone_address: str,
                                timeout: float):
@@ -213,7 +205,8 @@ class DroneManager(App):
                 if not mavsdk_server_address:
                     used_ports = [drone.server_port for drone in self.drones.values()]
                     while mavsdk_server_port in used_ports:
-                        mavsdk_server_port += 1
+                        mavsdk_server_port += 17
+                        self.compid += 1
                 # Check that we don't already have this drone connected.
                 for other_name in self.drones:
                     other_drone = self.drones[other_name]
@@ -221,7 +214,7 @@ class DroneManager(App):
                     if parsed_addr == other_addr and parsed_port == other_port:
                         output.write_line(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
-                drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port)
+                drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=self.compid)
                 connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
                 if connected:
                     output.write_line(f"Connected to drone {name}!")
@@ -389,7 +382,8 @@ class DroneManager(App):
                                                           str(drone.is_connected),
                                                           str(drone.is_armed),
                                                           str(drone.in_air),
-                                                          str(drone.flightmode)) + "\n"
+                                                          str(drone.flightmode),
+                                                          ) + "\n"
 
                 output.update(status_string)
                 await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
@@ -429,71 +423,6 @@ class DroneManager(App):
             return inner
         sys.stdout.write = decorator(sys.stdout.write)
         sys.stderr.write = decorator(sys.stderr.write)
-
-
-class InputWithHistory(Input):
-
-    BINDINGS = Input.BINDINGS.copy()
-    BINDINGS.append(Binding("up", "history_prev", "Previous item from history", show=False))
-    BINDINGS.append(Binding("down", "history_rec", "Next item in history", show=False))
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.history = []
-        self.history_cursor = 0     # Shows where in the history we are
-        self.rolling_zero = 0       # Current "0" index. If we had more entries, these get overwritten.
-        self.history_max_length = 50
-
-    # Behaviour: Depends on if we are already using history.
-    # A new submission is added to the history
-    # Up then goes back into the history
-    # Down does nothing
-    # But: if we submit a history entry (i.e. go back and do not change)
-    # Up displays the same entry (from the history)
-    # Down shows the next entry in the history.
-    # i.e. submit "a", up -> "a", down -> nothing
-    # submit "a", submit "b", submit "c", up -> "c", up ->"b", submit "b", [up -> "b", down ->"c"]
-
-    @property
-    def _current_history_cursor(self):
-        return (self.rolling_zero - self.history_cursor) % min(len(self.history), self.history_max_length)
-
-    def _increase_history_cursor(self):
-        if self.history_cursor < self.history_max_length and self.history_cursor < len(self.history):
-            self.history_cursor += 1
-
-    def _decrease_history_cursor(self):
-        if self.history_cursor > 1:
-            self.history_cursor -= 1
-
-    def _increase_history_rolling_pos(self):
-        self.rolling_zero = (self.rolling_zero + 1) % self.history_max_length
-
-    def action_history_prev(self) -> None:
-        if self.history:
-            self._increase_history_cursor()
-            self.value = self.history[self._current_history_cursor]
-
-    def action_history_rec(self) -> None:
-        if self.history:
-            self._decrease_history_cursor()
-            self.value = self.history[self._current_history_cursor]
-        if self.history_cursor == 1:
-            self.value = ""
-
-    def add_to_history(self, item) -> None:
-        # If we add extra entries, overwrite old ones
-        if len(self.history) == self.history_max_length:
-            # Entry to be overriden is at rolling_zero
-            self.history[self.rolling_zero] = item
-            self._increase_history_rolling_pos()
-        else:
-            self. history.append(item)
-
-    async def action_submit(self) -> None:
-        self.add_to_history(self.value)
-        self.history_cursor = 0     # TODO: Fancy history maintaining
-        await super().action_submit()
 
 
 if __name__ == "__main__":
