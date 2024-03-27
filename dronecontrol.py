@@ -60,7 +60,7 @@ class DroneManager(App):
 }
 
 #sidebar {
-    width: 58;
+    width: 90;
 }
 """
 
@@ -370,20 +370,24 @@ class DroneManager(App):
             while True:
                 status_string = ""
                 status_string += "Drone Status\n"
-                format_string = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}"
-                header_string = format_string.format("Name", "Connected", "Armed", "In-Air", "FlightMode")
+                format_string_drones = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10.7f}   {:>6.3f}   {:>6.3f}"
+                format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10}   {:>6}   {:>6}"
+                header_string = format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode",
+                                                            "GPS", "Rel", "Alt")
                 status_string += header_string + "\n"
                 status_string += "="*len(header_string) + "\n"
                 for name in list(self.drones.keys()):
                     drone = self.drones[name]
                     if len(name) > 10:
                         name = name[:7] + "..."
-                    status_string += format_string.format(str(name),
-                                                          str(drone.is_connected),
-                                                          str(drone.is_armed),
-                                                          str(drone.in_air),
-                                                          str(drone.flightmode),
-                                                          ) + "\n"
+                    status_string += format_string_drones.format("", "", "", "", "",
+                                                          drone.position_global[0], drone.position_ned[0], 0) + "\n"
+                    status_string += format_string_drones.format(str(name), str(drone.is_connected), str(drone.is_armed),
+                                                          str(drone.in_air), str(drone.flightmode),
+                                                          drone.position_global[1], drone.position_ned[1],
+                                                          drone.position_global[3]) + "\n"
+                    status_string += format_string_drones.format("", "", "", "", "",
+                                                          drone.position_global[2], drone.position_ned[2], 0) + "\n\n"
 
                 output.update(status_string)
                 await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
