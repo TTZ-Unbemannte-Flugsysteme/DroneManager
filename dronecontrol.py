@@ -373,7 +373,7 @@ class DroneManager(App):
                 format_string_drones = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10.7f}   {:>6.3f}   {:>6.3f}"
                 format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10}   {:>6}   {:>6}"
                 header_string = format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode",
-                                                            "GPS", "Rel", "Alt")
+                                                            "GPS", "NED", "Alt")
                 status_string += header_string + "\n"
                 status_string += "="*len(header_string) + "\n"
                 for name in list(self.drones.keys()):
