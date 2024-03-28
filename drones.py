@@ -2,6 +2,7 @@ import asyncio
 import math
 import random
 import threading
+import haversine
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -11,13 +12,23 @@ from typing import Dict
 
 from mavsdk import System
 from mavsdk.telemetry import FlightMode, FixType
-from mavsdk.action import ActionError
-from mavsdk.offboard import PositionNedYaw, OffboardError
+from mavsdk.action import ActionError, OrbitYawBehavior
+from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 
 
 # TODO: Implement a mission manager/queue thing.
 # TODO: Use the modes to check completion of command maybe?
 # TODO: health info
+
+def dist_ned(pos1, pos2):
+    return np.sqrt(np.sum((pos1 - pos2) ** 2, axis=0))
+
+
+def dist_gps(lat1, long1, alt1, lat2, long2, alt2):
+    dist_horiz = haversine.haversine((lat1, long1), (lat2, long2), unit=haversine.Unit.METERS)
+    dist_alt = alt1 - alt2
+    return math.sqrt(dist_horiz*dist_horiz + dist_alt*dist_alt)
+
 
 class Battery:
     def __init__(self):
@@ -116,6 +127,14 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
+    async def fly_to_gps(self, latitude, longitude, altitude, yaw, tolerance=0.5):
+        pass
+
+    @abstractmethod
+    async def orbit(self, radius, velocity, latitude, longitude, amsl):
+        pass
+
+    @abstractmethod
     async def land(self):
         pass
 
@@ -186,7 +205,7 @@ class DroneMAVSDK(Drone):
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=160):
         Drone.__init__(self, name)
         self.compid = compid
-        self.system = None
+        self.system: System | None = None
         self.server_addr = mavsdk_server_address
         self.server_port = mavsdk_server_port
         self._is_connected: bool = False
@@ -198,7 +217,9 @@ class DroneMAVSDK(Drone):
         self._position_ned: np.ndarray = np.zeros((3,))     # NED
         self._velocity: np.ndarray = np.zeros((3,))         # NED
         self._attitude: np.ndarray = np.zeros((3,))         # Roll, pitch and yaw, with positives right up and right.
+        self._heading: float = math.nan
         self._batteries: Dict[int, Battery] = {}
+        self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
     @property
     def is_connected(self) -> bool:
@@ -237,11 +258,14 @@ class DroneMAVSDK(Drone):
         return self._attitude
 
     @property
+    def heading(self) -> float:
+        return self._heading
+
+    @property
     def batteries(self) -> Dict[int, Battery]:
         return self._batteries
 
     async def connect(self, drone_address) -> bool:
-        print(self.server_addr, self.server_port, drone_address)
         self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
         _, self.server_addr, self.server_port = parse_address(scheme="udp",
                                                               host=self.server_addr,
@@ -308,6 +332,10 @@ class DroneMAVSDK(Drone):
             self._attitude[1] = att.pitch_deg
             self._attitude[2] = att.yaw_deg
 
+    async def _heading_check(self):
+        async for heading in self.system.telemetry.heading():
+            self._heading = heading.heading_deg
+
     async def _battery_check(self):
         async for battery in self.system.telemetry.battery():
             battery_id = battery.id
@@ -347,28 +375,51 @@ class DroneMAVSDK(Drone):
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
 
-    async def set_setpoint(self, point: np.ndarray):
+    async def _set_setpoint_ned(self, point):
         # point should be a numpy array of size (4,) for north, east, down, yaw, with yaw in degrees.
         point_ned_yaw = PositionNedYaw(*point)
         await _offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
+        return True
+
+    async def _set_setpoint_gps(self, latitude, longitude, alt_rel, yaw):
+        alt_type = PositionGlobalYaw.AltitudeType.AMSL
+        position = PositionGlobalYaw(lat_deg=latitude, lon_deg=longitude, alt_m=alt_rel,
+                                     yaw_deg=yaw, altitude_type=alt_type)
+        await _offboard_error_wrapper(self.system.offboard.set_position_global, position)
         return True
 
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
-        await self.set_setpoint(target_pos)
+        await self._set_setpoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         while True:
             cur_pos = self.position_ned
-            if np.sqrt(np.sum((target_pos[:3]-cur_pos)**2, axis=0)) < tolerance:
+            if dist_ned(cur_pos, target_pos[:3]) < tolerance:
                 return True
             else:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(1/self._position_update_freq)
 
-    async def fly_circle(self, velocity, radius, angle, direction):
-        raise NotImplementedError
+    async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
+        if not self.is_armed or not self.in_air:
+            raise RuntimeError("Can't fly a landed or unarmed drone!")
+        await _action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
+        while True:
+            while True:
+                lat1, long1, alt1 = np.take(self.position_global, [0, 1, 2])
+                if dist_gps(lat1, long1, alt1, latitude, longitude, amsl) < tolerance:
+                    return True
+                else:
+                    await asyncio.sleep(1 / self._position_update_freq)
+
+    async def orbit(self, radius, velocity, center_lat, center_long, amsl):
+        if not self.is_armed or not self.in_air:
+            raise RuntimeError("Can't fly a landed or unarmed drone!")
+        yaw_behaviour = OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER
+        await _action_error_wrapper(self.system.action.do_orbit, radius, velocity, yaw_behaviour, center_lat,
+                                    center_long, amsl)
 
     async def land(self):
         await _action_error_wrapper(self.system.action.land)
@@ -484,12 +535,6 @@ class DummyMAVDrone(Drone):
         return True
 
     async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
-        await asyncio.sleep(random.uniform(1, 10))
-        if not self.is_armed:
-            raise RuntimeError("Can't fly an unarmed drone!")
-        return True
-
-    async def fly_circle(self, velocity, radius, angle, direction):
         await asyncio.sleep(random.uniform(1, 10))
         if not self.is_armed:
             raise RuntimeError("Can't fly an unarmed drone!")

@@ -60,7 +60,7 @@ class DroneManager(App):
 }
 
 #sidebar {
-    width: 90;
+    width: 98;
 }
 """
 
@@ -115,13 +115,23 @@ class DroneManager(App):
         fly_to_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.5,
                                    help="Position tolerance")
 
-        fly_circle_parser = subparsers.add_parser("flycircle")
+        fly_to_gps_parser = subparsers.add_parser("flytogps")
+        fly_to_gps_parser.add_argument("drone", type=str, help="Name of the drone")
+        fly_to_gps_parser.add_argument("lat", type=float, help="Target latitude")
+        fly_to_gps_parser.add_argument("long", type=float, help="Target longitude")
+        fly_to_gps_parser.add_argument("alt", type=float, help="Target altitude (relative to takeoff)")
+        fly_to_gps_parser.add_argument("yaw", type=float, nargs="?", default=0.0, help="Target yaw in degrees. "
+                                                                                       "Default 0.")
+        fly_to_gps_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.5,
+                                       help="Position tolerance")
+
+        fly_circle_parser = subparsers.add_parser("orbit", help="Fly in a circle, facing the center point")
         fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
-        fly_circle_parser.add_argument("vel", type=float, help="Target velocity")
         fly_circle_parser.add_argument("radius", type=float, help="Radius of the circle")
-        fly_circle_parser.add_argument("angle", type=float, help="Angle (?) of the circle")
-        fly_circle_parser.add_argument("dir", type=str, choices=["cw", "ccw"],
-                                       help="Direction of the circle")
+        fly_circle_parser.add_argument("vel", type=float, help="Target velocity (negative for opposite direction)")
+        fly_circle_parser.add_argument("center_lat", type=float, help="Latitude of the center of the circle")
+        fly_circle_parser.add_argument("center_long", type=float, help="Longitude of the center of the circle")
+        fly_circle_parser.add_argument("amsl", type=float, help="Altitude in terms of AMSL.")
 
         land_parser = subparsers.add_parser("land")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
@@ -164,8 +174,12 @@ class DroneManager(App):
                 asyncio.create_task(self.change_flightmode(args.drones, args.mode))
             elif args.command == "flyto":
                 asyncio.create_task(self.fly_to(args.drone, args.x, args.y, args.z, args.yaw, tol=args.tolerance))
-            elif args.command == "flycircle":
-                asyncio.create_task(self.fly_circle(args.drone, args.vel, args.radius, args.angle, args.dir))
+            elif args.command == "flytogps":
+                asyncio.create_task(self.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
+                                                    tol=args.tolerance))
+            elif args.command == "orbit":
+                asyncio.create_task(self.orbit(args.drone, args.radius, args.vel, args.center_lat, args.center_long,
+                                               args.amsl))
             elif args.command == "land":
                 asyncio.create_task(self.land(args.drones))
             elif args.command == "stop":
@@ -306,10 +320,21 @@ class DroneManager(App):
         except Exception as e:
             output.write_line(repr(e))
 
-    async def fly_circle(self, name, velocity, radius, angle, direction):
+    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
+        output = self.query_one("#output", expect_type=Log)
+        output.write_line(f"Sending {name} to {(lat, long, alt)}")
+        try:
+            await self.drones[name].fly_to_gps(lat, long, alt, yaw, tolerance=tol)
+            output.write_line(f"{name} arrived at {(lat, long, alt)}")
+        except KeyError:
+            output.write_line(f"No drone named {name}!")
+        except Exception as e:
+            output.write_line(repr(e))
+
+    async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         output = self.query_one("#output", expect_type=Log)
         try:
-            await self.drones[name].fly_circle(velocity, radius, angle, direction)
+            await self.drones[name].orbit(radius, velocity, center_lat, center_long, amsl)
             output.write_line(f"{name} flying in a circle.")
         except KeyError:
             output.write_line(f"No drone named {name}!")
@@ -370,10 +395,10 @@ class DroneManager(App):
             while True:
                 status_string = ""
                 status_string += "Drone Status\n"
-                format_string_drones = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10.7f}   {:>6.3f}   {:>6.3f}"
-                format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10}   {:>6}   {:>6}"
+                format_string_drones = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10.7f}   {:>6.3f}   {:>6.3f}   {:>6.3f}"
+                format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10}   {:>6}   {:>6}   {:>6}"
                 header_string = format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode",
-                                                            "GPS", "NED", "Alt")
+                                                            "GPS", "NED", "Vel", "Alt")
                 status_string += header_string + "\n"
                 status_string += "="*len(header_string) + "\n"
                 for name in list(self.drones.keys()):
@@ -381,13 +406,16 @@ class DroneManager(App):
                     if len(name) > 10:
                         name = name[:7] + "..."
                     status_string += format_string_drones.format("", "", "", "", "",
-                                                          drone.position_global[0], drone.position_ned[0], 0) + "\n"
-                    status_string += format_string_drones.format(str(name), str(drone.is_connected), str(drone.is_armed),
-                                                          str(drone.in_air), str(drone.flightmode),
-                                                          drone.position_global[1], drone.position_ned[1],
-                                                          drone.position_global[3]) + "\n"
+                                                                 drone.position_global[0],
+                                                                 drone.position_ned[0], drone.velocity[0], 0) + "\n"
+                    status_string += format_string_drones.format(str(name), str(drone.is_connected),
+                                                                 str(drone.is_armed), str(drone.in_air),
+                                                                 str(drone.flightmode), drone.position_global[1],
+                                                                 drone.position_ned[1], drone.velocity[1],
+                                                                 drone.position_global[3]) + "\n"
                     status_string += format_string_drones.format("", "", "", "", "",
-                                                          drone.position_global[2], drone.position_ned[2], 0) + "\n\n"
+                                                                 drone.position_global[2],
+                                                                 drone.position_ned[2], drone.velocity[2], 0) + "\n\n"
 
                 output.update(status_string)
                 await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
