@@ -75,8 +75,6 @@ class DroneManager(App):
         self.drone_lock = asyncio.Lock()
         self._kill_counter = 0  # Require kill all to be entered twice
 
-        self._compid = 160
-
         self.parser = ArgParser(
             description="Interactive command line interface to connect and control multiple drones")
         subparsers = self.parser.add_subparsers(title="command",
@@ -206,7 +204,7 @@ class DroneManager(App):
                                mavsdk_server_address: str | None,
                                mavsdk_server_port: int,
                                drone_address: str,
-                               timeout: float):
+                               timeout: float, compid=160):
         output = self.query_one("#output", expect_type=Log)
         _, parsed_addr, parsed_port = parse_address(string=drone_address)
         parsed_connection_string = parse_address(string=drone_address, return_string=True)
@@ -219,9 +217,11 @@ class DroneManager(App):
                     return False
                 if not mavsdk_server_address:
                     used_ports = [drone.server_port for drone in self.drones.values()]
+                    used_compids = [drone.compid for drone in self.drones.values()]
                     while mavsdk_server_port in used_ports:
                         mavsdk_server_port = random.randint(10000, 60000)
-                        self._compid += 1
+                    while compid in used_compids:
+                        compid += 1
                 # Check that we don't already have this drone connected.
                 for other_name in self.drones:
                     other_drone = self.drones[other_name]
@@ -229,7 +229,7 @@ class DroneManager(App):
                     if parsed_addr == other_addr and parsed_port == other_port:
                         output.write_line(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
-                drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=self._compid)
+                drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
                 connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
                 if connected:
                     output.write_line(f"Connected to drone {name}!")
