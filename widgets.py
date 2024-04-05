@@ -1,5 +1,7 @@
-from textual.widgets import Input
+from textual.widgets import Input, Log
 from textual.binding import Binding
+
+import logging
 
 
 class InputWithHistory(Input):
@@ -66,3 +68,12 @@ class InputWithHistory(Input):
         # TODO: Fancy history maintaining, i.e. do not reset cursor if we enter a historic prompt without changing it.
         self.history_cursor = 0
         await super().action_submit()
+
+
+class TextualLogHandler(logging.Handler):
+    def __init__(self, log_textual, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_textual: Log = log_textual
+
+    def emit(self, record):
+        self.log_textual.write_line(self.format(record))

@@ -1,24 +1,31 @@
 import asyncio
+from collections import deque
 import math
+import os.path
 import random
 import threading
 import haversine
+import platform
+from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
 
 import numpy as np
 from urllib.parse import urlparse, urlunparse
 
-from typing import Dict
+from typing import Dict, Deque
 
 from mavsdk import System
-from mavsdk.telemetry import FlightMode, FixType
+from mavsdk.telemetry import FlightMode, FixType, StatusText, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 
+import logging
 
-# TODO: Implement a mission manager/queue thing.
-# TODO: Use the modes to check completion of command maybe?
+_cur_dir = os.path.dirname(os.path.abspath(__file__))
+_mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
+
 # TODO: health info
+
 
 def dist_ned(pos1, pos2):
     return np.sqrt(np.sum((pos1 - pos2) ** 2, axis=0))
@@ -50,26 +57,47 @@ class Drone(ABC, threading.Thread):
         threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
+        self.action_queue: Deque[asyncio.Task] = deque()
+        self.current_action: asyncio.Task | None = None
+        self.should_stop = threading.Event()
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.DEBUG)
         self.start()
+        asyncio.create_task(self._task_scheduler())
+
+    def run(self):
+        while not self.should_stop:
+            pass
+
+    async def _task_scheduler(self):
+        while True:
+            while len(self.action_queue) > 0:
+                self.current_action = asyncio.create_task(self.action_queue.popleft())
+                await self.current_action
+            else:
+                await asyncio.sleep(0.5)
+
+    def schedule_task(self, coro):
+        self.action_queue.append(coro)
 
     @property
     @abstractmethod
-    def is_connected(self):
+    def is_connected(self) -> bool:
         pass
 
     @property
     @abstractmethod
-    def is_armed(self):
+    def is_armed(self) -> bool:
         pass
 
     @property
     @abstractmethod
-    def flightmode(self):
+    def flightmode(self) -> FlightMode:
         pass
 
     @property
     @abstractmethod
-    def in_air(self):
+    def in_air(self) -> bool:
         pass
 
     @property
@@ -107,70 +135,61 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def arm(self):
+    async def arm(self) -> bool:
         pass
 
     @abstractmethod
-    async def disarm(self):
+    async def disarm(self) -> bool:
         pass
 
     @abstractmethod
-    async def takeoff(self):
+    async def takeoff(self) -> bool:
         pass
 
     @abstractmethod
-    async def change_flight_mode(self, flightmode):
+    async def change_flight_mode(self, flightmode) -> bool:
         pass
 
     @abstractmethod
-    async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
+    async def fly_to_point(self, point: np.ndarray, tolerance=0.5) -> bool:
         pass
 
     @abstractmethod
-    async def fly_to_gps(self, latitude, longitude, altitude, yaw, tolerance=0.5):
+    async def fly_to_gps(self, latitude, longitude, altitude, yaw, tolerance=0.5) -> bool:
         pass
 
     @abstractmethod
-    async def orbit(self, radius, velocity, latitude, longitude, amsl):
+    async def orbit(self, radius, velocity, latitude, longitude, amsl) -> bool:
         pass
 
     @abstractmethod
-    async def land(self):
+    async def land(self) -> bool:
         pass
 
     @abstractmethod
-    async def stop(self):
+    async def stop(self) -> bool:
         pass
 
     @abstractmethod
-    async def kill(self):
+    async def kill(self) -> bool:
         pass
 
+    async def clear_queue(self) -> None:
+        """ Clears the action queue
+        Does not cancel
+        """
+        self.action_queue.clear()
 
-# MAVSDK Error wrapping functions
-
-async def _action_error_wrapper(func, *args, **kwargs):
-    try:
-        await func(*args, **kwargs)
-    except ActionError as e:
-        print(e._result.result_str)
-        return False
-    return True
-
-
-async def _offboard_error_wrapper(func, *args, **kwargs):
-    try:
-        await func(*args, **kwargs)
-    except OffboardError as e:
-        print(e._result.result_str)
-        return False
-    return True
+    async def cancel_action(self) -> None:
+        if self.current_action:
+            self.current_action.cancel()
 
 
 def parse_address(string=None, scheme=None, host=None, port=None, return_string=False):
     """ Used to ensure that udp://:14540, udp://localhost:14540 and udp://127.0.0.1:14540 are recognized as equivalent.
 
-    Missing elements from the string or the other entries are replaced with defaults. These are udp, empty host and 50051, respectively.
+    Missing elements from the string or the other entries are replaced with defaults. These are udp, empty host and
+    50051 for the scheme, host and port, respectively.
     """
     if string is None and scheme is None and host is None and port is None:
         raise RuntimeError("Cant parse an address without either a url or a host/port pair!")
@@ -208,6 +227,7 @@ class DroneMAVSDK(Drone):
         self.system: System | None = None
         self.server_addr = mavsdk_server_address
         self.server_port = mavsdk_server_port
+        self._server_process: Popen | None = None
         self._is_connected: bool = False
         self._is_armed: bool = False
         self._flightmode: FlightMode = FlightMode.UNKNOWN
@@ -219,6 +239,7 @@ class DroneMAVSDK(Drone):
         self._attitude: np.ndarray = np.zeros((3,))         # Roll, pitch and yaw, with positives right up and right.
         self._heading: float = math.nan
         self._batteries: Dict[int, Battery] = {}
+        self._running_tasks = []
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
     @property
@@ -266,6 +287,11 @@ class DroneMAVSDK(Drone):
         return self._batteries
 
     async def connect(self, drone_address) -> bool:
+        # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
+        if self.server_addr is None and platform.system() == "Windows":
+            self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {drone_address}",
+                                         stdout=DEVNULL, stderr=DEVNULL)
+            self.server_addr = "127.0.0.1"
         self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
         _, self.server_addr, self.server_port = parse_address(scheme="udp",
                                                               host=self.server_addr,
@@ -280,15 +306,16 @@ class DroneMAVSDK(Drone):
         return False
 
     async def _schedule_update_tasks(self) -> None:
-        asyncio.create_task(self._connect_check())
-        asyncio.create_task(self._arm_check())
-        asyncio.create_task(self._flightmode_check())
-        asyncio.create_task(self._inair_check())
-        asyncio.create_task(self._gps_check())
-        asyncio.create_task(self._g_pos_check())
-        asyncio.create_task(self._vel_rpos_check())
-        asyncio.create_task(self._att_check())
-        asyncio.create_task(self._battery_check())
+        self._running_tasks.append(asyncio.create_task(self._connect_check()))
+        self._running_tasks.append(asyncio.create_task(self._arm_check()))
+        self._running_tasks.append(asyncio.create_task(self._flightmode_check()))
+        self._running_tasks.append(asyncio.create_task(self._inair_check()))
+        self._running_tasks.append(asyncio.create_task(self._gps_check()))
+        self._running_tasks.append(asyncio.create_task(self._g_pos_check()))
+        self._running_tasks.append(asyncio.create_task(self._vel_rpos_check()))
+        self._running_tasks.append(asyncio.create_task(self._att_check()))
+        self._running_tasks.append(asyncio.create_task(self._battery_check()))
+        self._running_tasks.append(asyncio.create_task(self._status_check()))
 
     async def _connect_check(self):
         async for state in self.system.core.connection_state():
@@ -350,45 +377,66 @@ class DroneMAVSDK(Drone):
             own_battery.voltage = battery.voltage_v
             own_battery.temperature = battery.temperature_degc
 
+    async def _status_check(self):
+        async for message in self.system.telemetry.status_text():
+            if message.type == StatusTextType.DEBUG:
+                self.logger.debug(message.text)
+            elif message.type in [StatusTextType.INFO, StatusTextType.NOTICE]:
+                self.logger.info(message.text)
+            elif message.type == StatusTextType.WARNING:
+                self.logger.warning(message.text)
+            else:
+                self.logger.error(message.text)
+
     async def arm(self):
-        return await _action_error_wrapper(self.system.action.arm)
+        await super().arm()
+        if self.current_action:
+            self.current_action.cancel()
+        return await self._action_error_wrapper(self.system.action.arm)
 
     async def disarm(self):
-        return await _action_error_wrapper(self.system.action.disarm)
+        await super().disarm()
+        return await self._action_error_wrapper(self.system.action.disarm)
 
     async def takeoff(self):
+        await super().takeoff()
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
-        return await _action_error_wrapper(self.system.action.takeoff)
+        await self._action_error_wrapper(self.system.action.takeoff)
+        while self.flightmode is FlightMode.TAKEOFF:
+            await asyncio.sleep(self._position_update_freq)
+        return True
 
     async def change_flight_mode(self, flightmode: str):
+        await super().change_flight_mode(flightmode)
         if flightmode == "hold":
-            return await _action_error_wrapper(self.system.action.hold)
+            return await self._action_error_wrapper(self.system.action.hold)
         elif flightmode == "offboard":
-            return await _offboard_error_wrapper(self.system.offboard.start)
+            return await self._offboard_error_wrapper(self.system.offboard.start)
         elif flightmode == "return":
-            return await _action_error_wrapper(self.system.action.return_to_launch)
+            return await self._action_error_wrapper(self.system.action.return_to_launch)
         elif flightmode == "land":
-            return await _action_error_wrapper(self.system.action.land)
+            return await self._action_error_wrapper(self.system.action.land)
         elif flightmode == "takeoff":
-            return await _action_error_wrapper(self.system.action.takeoff)
+            return await self._action_error_wrapper(self.system.action.takeoff)
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
 
     async def _set_setpoint_ned(self, point):
         # point should be a numpy array of size (4,) for north, east, down, yaw, with yaw in degrees.
         point_ned_yaw = PositionNedYaw(*point)
-        await _offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
+        await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
         return True
 
     async def _set_setpoint_gps(self, latitude, longitude, alt_rel, yaw):
         alt_type = PositionGlobalYaw.AltitudeType.AMSL
         position = PositionGlobalYaw(lat_deg=latitude, lon_deg=longitude, alt_m=alt_rel,
                                      yaw_deg=yaw, altitude_type=alt_type)
-        await _offboard_error_wrapper(self.system.offboard.set_position_global, position)
+        await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
         return True
 
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
+        await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
@@ -403,9 +451,10 @@ class DroneMAVSDK(Drone):
                 await asyncio.sleep(1/self._position_update_freq)
 
     async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
+        await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
-        await _action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
+        await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
         while True:
             while True:
                 lat1, long1, alt1 = np.take(self.position_global, [0, 1, 2])
@@ -415,17 +464,24 @@ class DroneMAVSDK(Drone):
                     await asyncio.sleep(1 / self._position_update_freq)
 
     async def orbit(self, radius, velocity, center_lat, center_long, amsl):
+        await super().orbit(radius, velocity,center_lat, center_long, amsl)
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
         yaw_behaviour = OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER
-        await _action_error_wrapper(self.system.action.do_orbit, radius, velocity, yaw_behaviour, center_lat,
-                                    center_long, amsl)
+        await self._action_error_wrapper(self.system.action.do_orbit, radius, velocity, yaw_behaviour, center_lat,
+                                         center_long, amsl)
 
     async def land(self):
-        await _action_error_wrapper(self.system.action.land)
+        await super().land()
+        await self._action_error_wrapper(self.system.action.land)
         return True
 
+    def _stop_tasks(self):
+        for task in self._running_tasks:
+            task.cancel()
+
     async def stop(self):
+        await super().stop()
         # Override whatever else is going on and land?
         Warning("The stop command currently lands the drone and then disarms it")
         if not self.is_connected:
@@ -434,10 +490,34 @@ class DroneMAVSDK(Drone):
         while self.in_air:
             await asyncio.sleep(0.1)
         await self.disarm()
+        self._stop_tasks()
+        if self._server_process:
+            self._server_process.terminate()
         return True
 
     async def kill(self):
-        await _action_error_wrapper(self.system.action.kill)
+        await self._action_error_wrapper(self.system.action.kill)
+        self._stop_tasks()
+        if self._server_process:
+            self._server_process.terminate()
+        return True
+
+    # MAVSDK Error wrapping functions
+
+    async def _action_error_wrapper(self, func, *args, **kwargs):
+        try:
+            await func(*args, **kwargs)
+        except ActionError as e:
+            self.logger.error(e._result.result_str)
+            return False
+        return True
+
+    async def _offboard_error_wrapper(self, func, *args, **kwargs):
+        try:
+            await func(*args, **kwargs)
+        except OffboardError as e:
+            self.logger.error(e._result.result_str)
+            return False
         return True
 
 
