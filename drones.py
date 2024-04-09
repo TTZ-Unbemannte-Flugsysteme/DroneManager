@@ -32,6 +32,7 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 
 
 # TODO: health info
+# TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 
 
 def dist_ned(pos1, pos2):
