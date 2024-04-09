@@ -1,15 +1,17 @@
 import asyncio
+import datetime
+import os
 from asyncio.exceptions import TimeoutError
 import sys
 import argparse
 import shlex
-from typing import Dict
+from typing import Dict, List
 import numpy as np
 import random
 
 import textual.css.query
 from textual import on
-from textual.app import App
+from textual.app import App, Screen, Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Log, Static
 
@@ -18,6 +20,19 @@ from drones import Drone, DroneMAVSDK, DummyMAVDrone, parse_address
 from betterparser import ArgParser
 
 import logging
+
+logger = logging.getLogger("manager")
+logger.setLevel(logging.DEBUG)
+
+common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+
+filename = "applog_" + str(datetime.datetime.utcnow()) + ".txt"
+logdir = os.path.abspath("./logs")
+os.makedirs(logdir, exist_ok=True)
+file_handler = logging.FileHandler(os.path.join(logdir, filename))
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(common_formatter)
+logger.addHandler(file_handler)
 
 
 # Must start mavsdk_server first, with arguments: mavsdk_server_bin.exe -p <serverport> udp://:<droneport>
@@ -31,7 +46,26 @@ DRONE_DICT = {
 }
 
 
-class DroneManager(App):
+class StatusScreen(Screen):
+
+    BINDINGS = {
+        Binding("a", "app.cycle_drones_down", "Cycle Drone <-"),
+        Binding("d", "app.cycle_drones_up", "Cycle Drone ->"),
+    }
+
+    def __init__(self, drone, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.drone = drone
+
+    def compose(self):
+        yield Static(f"{self.drone.name}", id="Name")
+        yield Static(f"{self.drone.drone_addr}", id="Address")
+        yield Static(f"{self.drone.attitude}", id="Attitude")
+        yield Static(f"{self.drone.batteries}", id="Batteries")
+        yield Footer()
+
+
+class CommandScreen(Screen):
     # TODO: Schedule take-off and land
     # TODO: Put a bunch of the code into their associated widgets and put those into their own files (i.e. cli into the
     #  tweaked input)
@@ -40,16 +74,10 @@ class DroneManager(App):
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
 
-    # TODO: Safety checks, such as vortex ring state avoidance.
-
-    # TODO: Figure out what stop should do and if we even want it
+    # TODO: Safety checks, such as vortex ring state avoidance?
 
     # How often the status screen is updated.
     STATUS_REFRESH_RATE = 20
-
-#    BINDINGS = [
-#        ("k", "stop", "STOP ALL")
-#    ]
 
     CSS = """
 .text {
@@ -69,8 +97,8 @@ class DroneManager(App):
 }
 """
 
-    def __init__(self, drone_class):
-        super().__init__()
+    def __init__(self, drone_class, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._drone_class = drone_class
         self.drones: Dict[str, Drone] = {}
         self.running_tasks = set()
@@ -78,9 +106,6 @@ class DroneManager(App):
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self.drone_lock = asyncio.Lock()
         self._kill_counter = 0  # Require kill all to be entered twice
-
-        self.logger = logging.getLogger("manager")
-        self.logger.setLevel(logging.DEBUG)
 
         self.parser = ArgParser(
             description="Interactive command line interface to connect and control multiple drones")
@@ -150,9 +175,6 @@ class DroneManager(App):
                                                          "drones are listed, kills all of them.")
         kill_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to kill.")
 
-    def run(self, *args, **kwargs):
-        super().run(*args, **kwargs)
-
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
         value = message.value
@@ -161,7 +183,7 @@ class DroneManager(App):
         try:
             args = self.parser.parse_args(shlex.split(value))
         except ValueError as e:
-            self.logger.error(repr(e), exc_info=True)
+            logger.warning(str(e))
             return
         try:
             if args.command != "kill" or args.drones:
@@ -194,19 +216,19 @@ class DroneManager(App):
             elif args.command == "land":
                 tmp = asyncio.create_task(self.land(args.drones))
             elif args.command == "stop":
-                await self.action_stop(args.drones)
+                tmp = asyncio.create_task(self.action_stop(args.drones))
             elif args.command == "kill":
                 if not args.drones:
                     if self._kill_counter:
-                        await self.kill(args.drones)
+                        tmp = asyncio.create_task(self.kill(args.drones))
                     else:
-                        self.logger.warning("Are you sure? Enter kill again")
+                        logger.warning("Are you sure? Enter kill again")
                         self._kill_counter += 1
                 else:
                     tmp = asyncio.create_task(self.kill(args.drones))
             self.running_tasks.add(tmp)
         except Exception as e:
-            self.logger.error(repr(e))
+            logger.error(repr(e))
 
     @property
     def used_drone_addrs(self):
@@ -220,12 +242,12 @@ class DroneManager(App):
                                timeout: float, compid=160):
         _, parsed_addr, parsed_port = parse_address(string=drone_address)
         parsed_connection_string = parse_address(string=drone_address, return_string=True)
-        self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
+        logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
         async with self.drone_lock:
             try:
                 # Ensure that for each drone there is a one-to-one-to-one relation between name, mavsdk port and drone
                 if name in self.drones:
-                    self.logger.warning(f"A drone called {name} already exists. Each drone must have a unique name.")
+                    logger.warning(f"A drone called {name} already exists. Each drone must have a unique name.")
                     return False
                 if not mavsdk_server_address:
                     used_ports = [drone.server_port for drone in self.drones.values()]
@@ -239,52 +261,41 @@ class DroneManager(App):
                     other_drone = self.drones[other_name]
                     _, other_addr, other_port = parse_address(string=other_drone.drone_addr)
                     if parsed_addr == other_addr and parsed_port == other_port:
-                        self.logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
+                        logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
                 drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
                 connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
                 if connected:
-                    self.logger.info(f"Connected to {name}!")
+                    logger.info(f"Connected to {name}!")
                     self.drones[name] = drone
                     output = self.query_one("#output", expect_type=Log)
                     drone_handler = TextualLogHandler(output)
                     drone_handler.setLevel(logging.INFO)
-                    drone_handler.setFormatter(logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s',
-                                                                 datefmt="%H:%M:%S"))
-                    drone.logger.addHandler(drone_handler)
+                    drone_handler.setFormatter(common_formatter)
+                    drone.add_handler(drone_handler)
+                    self.app.add_status_screen(drone, name)
                     return True
                 else:
-                    self.logger.warning(f"Failed to connect to drone {name}!")
+                    logger.warning(f"Failed to connect to drone {name}!")
                     self._remove_drone_object(name, drone)
                     return False
             except TimeoutError:
-                self.logger.warning(f"Connection attempts to {name} timed out!")
+                logger.warning(f"Connection attempts to {name} timed out!")
                 del drone
                 return False
 
     async def _multiple_drone_action(self, action, names, start_string, *args, **kwargs):
-        """
-
-        :param action:
-        :param names:
-        :param start_string:
-        :param success_string: Output string for the success of a single drone. Will have the name of the drone passed
-                               to it.
-        :param fail_string: Output string for the failure of a single drone. Will have the name of the drone passed
-                            to it.
-        :return:
-        """
-        self.logger.info(start_string.format(names))
+        logger.info(start_string.format(names))
         try:
             results = await asyncio.gather(*[action(self.drones[name], *args, **kwargs) for name in names],
                                            return_exceptions=True)
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    self.logger.error(f"Drone {names[i]} failed due to {repr(result)}")
+                    logger.error(f"Drone {names[i]} failed due to {repr(result)}")
         except KeyError:
-            self.logger.warning("No drones named {}!".format([name for name in names if name not in self.drones]))
+            logger.warning("No drones named {}!".format([name for name in names if name not in self.drones]))
         except Exception as e:
-            self.logger.error(repr(e))
+            logger.error(repr(e))
 
     async def arm(self, names):
         await self._multiple_drone_action(self._drone_class.arm, names, "Arming drone(s) {}.")
@@ -306,35 +317,35 @@ class DroneManager(App):
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.5):
         point = np.array([x, y, z, yaw])
-        self.logger.info(f"Queueing move to {point} for {name}.")
+        logger.info(f"Queueing move to {point} for {name}.")
         try:
             coro = self.drones[name].fly_to_point(point, tolerance=tol)
             result = self.drones[name].schedule_task(coro)
             await result
         except KeyError:
-            self.logger.warning(f"No drone named {name}!")
+            logger.warning(f"No drone named {name}!")
         except Exception as e:
-            self.logger.error(repr(e))
+            logger.error(repr(e))
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
-        self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
+        logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
         try:
             coro = self.drones[name].fly_to_gps(lat, long, alt, yaw, tolerance=tol)
             result = self.drones[name].schedule_task(coro)
             await result
         except KeyError:
-            self.logger.warning(f"No drone named {name}!")
+            logger.warning(f"No drone named {name}!")
         except Exception as e:
-            self.logger.error(repr(e))
+            logger.error(repr(e))
 
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:
             await self.drones[name].orbit(radius, velocity, center_lat, center_long, amsl)
-            self.logger.info(f"{name} flying in a circle.")
+            logger.info(f"{name} flying in a circle.")
         except KeyError:
-            self.logger.warning(f"No drone named {name}!")
+            logger.warning(f"No drone named {name}!")
         except Exception as e:
-            self.logger.error(repr(e))
+            logger.error(repr(e))
 
     async def _stop_drone(self, name):
         drone = self.drones[name]
@@ -353,6 +364,7 @@ class DroneManager(App):
             self.drones.pop(name)
         except KeyError:
             pass
+        self.app.remove_status_screen(name)
         del drone.system
         drone.should_stop.set()
         del drone
@@ -363,28 +375,28 @@ class DroneManager(App):
             stop_app = True
         async with self.drone_lock:
             if not names:
-                self.logger.info("Stopping all drones!")
+                logger.info("Stopping all drones!")
             else:
-                self.logger.info(f"Stopping {names}")
+                logger.info(f"Stopping {names}")
             drones_to_stop = names if names else list(self.drones.keys())
             results = await asyncio.gather(*[self._stop_drone(name) for name in drones_to_stop], return_exceptions=True)
             for i, result in enumerate(results):
                 # If one of the drones encounters an excepton
                 if isinstance(result, Exception):
-                    self.logger.critical(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
-                                         f"{repr(result)}!")
+                    logger.critical(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
+                                    f"{repr(result)}!")
                     stop_app = False
             if stop_app:
-                self.logger.info("All drones stopped, exiting...")
+                logger.info("All drones stopped, exiting...")
                 await asyncio.sleep(2)  # Beauty pause
-                self.exit()
+                self.app.exit()
 
     async def kill(self, names):
         async with self.drone_lock:
             if not names:
-                self.logger.info("Killing all drones!")
+                logger.info("Killing all drones!")
             else:
-                self.logger.info(f"Killing {names}")
+                logger.info(f"Killing {names}")
             drones_to_stop = names if names else list(self.drones.keys())
             await asyncio.gather(*[self._kill_drone(name) for name in drones_to_stop], return_exceptions=True)
 
@@ -425,7 +437,7 @@ class DroneManager(App):
                 output.update(status_string)
                 await asyncio.sleep(1/self.STATUS_REFRESH_RATE)
         except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
+            logger.error(repr(e), exc_info=True)
 
     def _schedule_initialization_tasks(self):
         asyncio.create_task(self.update_status())
@@ -439,10 +451,9 @@ class DroneManager(App):
             except textual.css.query.NoMatches:
                 await asyncio.sleep(0.1)
         handler = TextualLogHandler(output)
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s',
-                                               datefmt="%H:%M:%S"))
-        self.logger.addHandler(handler)
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(common_formatter)
+        logger.addHandler(handler)
 
     def compose(self):
         yield Header()
@@ -457,7 +468,6 @@ class DroneManager(App):
             ),
             InputWithHistory(placeholder="Command line", id="cli")
         )
-
         yield Footer()
         self._schedule_initialization_tasks()
 
@@ -467,13 +477,73 @@ class DroneManager(App):
         def decorator(func):
             def inner(inputstr):
                 try:
-                    self.logger.info(inputstr)
+                    logger.info(inputstr)
                     return func(inputstr)
                 except:
                     return func(inputstr)
             return inner
         sys.stdout.write = decorator(sys.stdout.write)
         sys.stderr.write = decorator(sys.stderr.write)
+
+
+class DroneManager(App):
+
+    BINDINGS = {
+        Binding("s", "cycle_control", "Swap Status/Control"),
+    }
+
+    def __init__(self, drone_class):
+        self._drone_class = drone_class
+        self.status_screens = []
+        self.status_index = 0
+        super().__init__()
+
+    def on_mount(self):
+        screen = CommandScreen(self._drone_class, name="control-screen")
+        self.install_screen(screen, name=screen.name)
+        self.add_mode("control", base_screen=screen)
+        self.switch_mode("control")
+
+    def add_status_screen(self, drone, name):
+        logger.debug(f"Adding a new status screen {name}")
+        screen = StatusScreen(drone, name=name)
+        self.install_screen(screen, name=screen.name)
+        self.add_mode(name, base_screen=screen)
+        self.status_screens.append(name)
+
+    def remove_status_screen(self, name):
+        logger.debug(f"Removing status screen {name}")
+        self.remove_mode(name)
+        self.uninstall_screen(name)
+        if name in self.status_screens:
+            self.status_screens.remove(name)
+
+    def action_cycle_control(self):
+        logger.debug("Switching between control and status screens")
+        if self.current_mode == "control" and self.status_screens:
+            logger.debug(f"Switching from control to status. Current status index {self.status_index}. Current screens ")
+            self.switch_mode(self.status_screens[self.status_index])
+        elif self.current_mode != "control":
+            logger.debug("Switching to control")
+            self.switch_mode("control")
+        else:
+            logger.debug("No valid target for switching")
+
+    def action_cycle_drones_up(self):
+        logger.debug(f"Cycling status screens up. Current Screens {self.status_screens}.")
+        target_index = (self.status_index + 1) % len(self.status_screens)
+        logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
+        logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
+        self.status_index = target_index
+        self.switch_mode(self.status_screens[target_index])
+
+    def action_cycle_drones_down(self):
+        logger.debug(f"Cycling status screens down. Current Screens {self.status_screens}.")
+        target_index = (self.status_index - 1) % len(self.status_screens)
+        logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
+        logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
+        self.status_index = target_index
+        self.switch_mode(self.status_screens[target_index])
 
 
 if __name__ == "__main__":
@@ -485,3 +555,5 @@ if __name__ == "__main__":
     drone_type = DummyMAVDrone if start_args.dummy else DroneMAVSDK
     app = DroneManager(drone_type)
     app.run()
+
+    logging.shutdown()

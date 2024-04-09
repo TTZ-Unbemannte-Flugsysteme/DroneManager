@@ -64,6 +64,7 @@ class Drone(ABC, threading.Thread):
         self.should_stop = threading.Event()
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
+        self.logging_handlers = []
         self.start()
         asyncio.create_task(self._task_scheduler())
 
@@ -88,6 +89,10 @@ class Drone(ABC, threading.Thread):
         fut = asyncio.get_running_loop().create_future()
         self.action_queue.append((coro, fut))
         return fut
+
+    def add_handler(self, handler):
+        self.logger.addHandler(handler)
+        self.logging_handlers.append(handler)
 
     @property
     @abstractmethod
@@ -177,11 +182,23 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def stop(self) -> bool:
-        pass
+        """
+        This function should be called at the end of the implementing function.
+
+        :return:
+        """
+        for handler in self.logging_handlers:
+            self.logger.removeHandler(handler)
 
     @abstractmethod
     async def kill(self) -> bool:
-        pass
+        """
+        This function should be called at the end of the implementing function.
+
+        :return:
+        """
+        for handler in self.logging_handlers:
+            self.logger.removeHandler(handler)
 
     async def clear_queue(self) -> None:
         """ Clears the action queue
@@ -538,7 +555,6 @@ class DroneMAVSDK(Drone):
             task.cancel()
 
     async def stop(self):
-        await super().stop()
         # Override whatever else is going on and land?
         await self.clear_queue()
         await self.cancel_action()
@@ -551,6 +567,7 @@ class DroneMAVSDK(Drone):
         self._stop_tasks()
         if self._server_process:
             self._server_process.terminate()
+        await super().stop()
         return True
 
     async def kill(self):
@@ -558,6 +575,7 @@ class DroneMAVSDK(Drone):
         self._stop_tasks()
         if self._server_process:
             self._server_process.terminate()
+        await super().kill()
         return True
 
     # MAVSDK Error wrapping functions
