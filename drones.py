@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from collections import deque
 import math
 import os.path
@@ -23,7 +24,12 @@ from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 import logging
 
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
+logdir = os.path.abspath("./logs")
+os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
+
+common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+
 
 # TODO: health info
 
@@ -54,7 +60,7 @@ class Drone(ABC, threading.Thread):
 
     VALID_FLIGHTMODES = []
 
-    def __init__(self, name, *args, **kwargs):
+    def __init__(self, name, log_to_file=True, *args, **kwargs):
         threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
@@ -65,6 +71,11 @@ class Drone(ABC, threading.Thread):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         self.logging_handlers = []
+        if log_to_file:
+            file_handler = logging.FileHandler(os.path.join(logdir, f"drone_{name}_{datetime.datetime.utcnow()}.txt"))
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(common_formatter)
+            self.add_handler(file_handler)
         self.start()
         asyncio.create_task(self._task_scheduler())
 

@@ -67,8 +67,6 @@ class StatusScreen(Screen):
 
 class CommandScreen(Screen):
     # TODO: Schedule take-off and land
-    # TODO: Put a bunch of the code into their associated widgets and put those into their own files (i.e. cli into the
-    #  tweaked input)
     # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health"
     #  checks, check what else
     # TODO: Handle MAVSDK crashes
