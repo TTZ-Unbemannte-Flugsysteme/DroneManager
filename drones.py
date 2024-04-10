@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from collections import deque
 import math
 import os.path
@@ -11,8 +12,9 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 from urllib.parse import urlparse, urlunparse
+import socket
 
-from typing import Dict, Deque
+from typing import Dict, Deque, Tuple
 
 from mavsdk import System
 from mavsdk.telemetry import FlightMode, FixType, StatusText, StatusTextType
@@ -22,10 +24,15 @@ from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 import logging
 
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
+logdir = os.path.abspath("./logs")
+os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
+common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+
+
 # TODO: health info
-# TODO: Checks on takeoff to prevent taking off if away from (0,0), both mode and command
+# TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 
 
 def dist_ned(pos1, pos2):
@@ -54,15 +61,22 @@ class Drone(ABC, threading.Thread):
 
     VALID_FLIGHTMODES = []
 
-    def __init__(self, name, *args, **kwargs):
+    def __init__(self, name, log_to_file=True, *args, **kwargs):
         threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
-        self.action_queue: Deque[asyncio.Task] = deque()
+        self.drone_ip = None
+        self.action_queue: Deque[Tuple[asyncio.Coroutine, asyncio.Future]] = deque()
         self.current_action: asyncio.Task | None = None
         self.should_stop = threading.Event()
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
+        self.logging_handlers = []
+        if log_to_file:
+            file_handler = logging.FileHandler(os.path.join(logdir, f"drone_{name}_{datetime.datetime.utcnow()}.txt"))
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(common_formatter)
+            self.add_handler(file_handler)
         self.start()
         asyncio.create_task(self._task_scheduler())
 
@@ -73,13 +87,24 @@ class Drone(ABC, threading.Thread):
     async def _task_scheduler(self):
         while True:
             while len(self.action_queue) > 0:
-                self.current_action = asyncio.create_task(self.action_queue.popleft())
-                await self.current_action
+                action, fut = self.action_queue.popleft()
+                self.current_action = asyncio.create_task(action)
+                try:
+                    result = await self.current_action
+                    fut.set_result(result)
+                except Exception as e:
+                    fut.set_exception(e)
             else:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
 
-    def schedule_task(self, coro):
-        self.action_queue.append(coro)
+    def schedule_task(self, coro) -> asyncio.Future:
+        fut = asyncio.get_running_loop().create_future()
+        self.action_queue.append((coro, fut))
+        return fut
+
+    def add_handler(self, handler):
+        self.logger.addHandler(handler)
+        self.logging_handlers.append(handler)
 
     @property
     @abstractmethod
@@ -169,11 +194,23 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def stop(self) -> bool:
-        pass
+        """
+        This function should be called at the end of the implementing function.
+
+        :return:
+        """
+        for handler in self.logging_handlers:
+            self.logger.removeHandler(handler)
 
     @abstractmethod
     async def kill(self) -> bool:
-        pass
+        """
+        This function should be called at the end of the implementing function.
+
+        :return:
+        """
+        for handler in self.logging_handlers:
+            self.logger.removeHandler(handler)
 
     async def clear_queue(self) -> None:
         """ Clears the action queue
@@ -289,6 +326,12 @@ class DroneMAVSDK(Drone):
     def batteries(self) -> Dict[int, Battery]:
         return self._batteries
 
+    async def _send_initial_beat(self, address, port):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("", port))
+        sock.sendto('.'.encode("utf8"), (address, port))
+        sock.close()
+
     async def connect(self, drone_address) -> bool:
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
         if self.server_addr is None and platform.system() == "Windows":
@@ -298,9 +341,11 @@ class DroneMAVSDK(Drone):
         self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
         _, self.server_addr, self.server_port = parse_address(scheme="udp",
                                                               host=self.server_addr,
-                                                              port=self.server_port)
-        drone_address = parse_address(string=drone_address, return_string=True)
-        self.drone_addr = drone_address
+                                                              port=self.server_port,
+                                                              return_string=False)
+        scheme, ip, port = parse_address(string=drone_address, return_string=False)
+        self.drone_addr = "{scheme}://{ip}:{port}".format(scheme=scheme, ip=ip, port=port)
+        await self._send_initial_beat(ip, port)
         await self.system.connect(system_address=self.drone_addr)
         async for state in self.system.core.connection_state():
             if state.is_connected:
@@ -392,40 +437,67 @@ class DroneMAVSDK(Drone):
                 self.logger.error(message.text)
 
     async def arm(self):
+        self.logger.info("Arming!")
         await super().arm()
-        if self.current_action:
-            self.current_action.cancel()
-        return await self._action_error_wrapper(self.system.action.arm)
+        result = await self._action_error_wrapper(self.system.action.arm)
+        if result and not isinstance(result, Exception):
+            self.logger.info("Armed!")
+        else:
+            self.logger.warning("Couldn't arm!")
+        return result
 
     async def disarm(self):
+        self.logger.info("Disarming!")
         await super().disarm()
-        return await self._action_error_wrapper(self.system.action.disarm)
+        result = await self._action_error_wrapper(self.system.action.disarm)
+        if result and not isinstance(result, Exception):
+            self.logger.info("Disarmed!")
+        else:
+            self.logger.warning("Couldn't disarm!")
+        return result
 
-    async def takeoff(self):
-        await super().takeoff()
+    async def _can_takeoff(self):
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
         #if dist_ned(self.position_ned, np.zeros_like(self.position_ned)) < self.TAKEOFF_THRESH:
         #    raise RuntimeError("Can't take off away from 0,0,0!")
-        await self._action_error_wrapper(self.system.action.takeoff)
+
+    async def takeoff(self):
+        self.logger.info("Trying to take off...")
+        await super().takeoff()
+        await self._can_takeoff()
+        result = await self._action_error_wrapper(self.system.action.takeoff)
+        if isinstance(result, Exception):
+            self.logger.warning("Couldn't takeoff!")
+        while self.flightmode is not FlightMode.TAKEOFF:
+            await asyncio.sleep(1/self._position_update_freq)
+        self.logger.info("Taking off!")
         while self.flightmode is FlightMode.TAKEOFF:
-            await asyncio.sleep(self._position_update_freq)
+            await asyncio.sleep(1/self._position_update_freq)
+        self.logger.info("Completed takeoff!")
         return True
 
     async def change_flight_mode(self, flightmode: str):
+        self.logger.info(f"Changing flight mode to {flightmode}")
         await super().change_flight_mode(flightmode)
         if flightmode == "hold":
-            return await self._action_error_wrapper(self.system.action.hold)
+            result = await self._action_error_wrapper(self.system.action.hold)
         elif flightmode == "offboard":
-            return await self._offboard_error_wrapper(self.system.offboard.start)
+            result = await self._offboard_error_wrapper(self.system.offboard.start)
         elif flightmode == "return":
-            return await self._action_error_wrapper(self.system.action.return_to_launch)
+            result = await self._action_error_wrapper(self.system.action.return_to_launch)
         elif flightmode == "land":
-            return await self._action_error_wrapper(self.system.action.land)
+            result = await self._action_error_wrapper(self.system.action.land)
         elif flightmode == "takeoff":
-            return await self._action_error_wrapper(self.system.action.takeoff)
+            await self._can_takeoff()
+            result = await self._action_error_wrapper(self.system.action.takeoff)
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
+        if result and not isinstance(result, Exception):
+            self.logger.info(f"New flight mode {flightmode}!")
+        else:
+            self.logger.warning("Couldn't change flight mode!")
+        return result
 
     async def _set_setpoint_ned(self, point):
         # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
@@ -440,30 +512,34 @@ class DroneMAVSDK(Drone):
         await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
         return True
 
+    async def _can_do_in_air_commands(self):
+        if not self.is_armed or not self.in_air:
+            raise RuntimeError("Can't fly a landed or unarmed drone!")
+
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
-        if not self.is_armed or not self.in_air:
-            raise RuntimeError("Can't fly a landed or unarmed drone!")
+        await self._can_do_in_air_commands()
         await self._set_setpoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         while True:
             cur_pos = self.position_ned
             if dist_ned(cur_pos, target_pos[:3]) < tolerance:
+                self.logger.info(f"Arrived at {target_pos}!")
                 return True
             else:
                 await asyncio.sleep(1/self._position_update_freq)
 
     async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
         await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
-        if not self.is_armed or not self.in_air:
-            raise RuntimeError("Can't fly a landed or unarmed drone!")
+        await self._can_do_in_air_commands()
         await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
         while True:
             while True:
                 lat1, long1, alt1 = np.take(self.position_global, [0, 1, 2])
                 if dist_gps(lat1, long1, alt1, latitude, longitude, amsl) < tolerance:
+                    self.logger.info(f"Arrived at {(latitude, longitude, amsl)}")
                     return True
                 else:
                     await asyncio.sleep(1 / self._position_update_freq)
@@ -477,8 +553,17 @@ class DroneMAVSDK(Drone):
                                          center_long, amsl)
 
     async def land(self):
+        self.logger.info("Trying to land...")
         await super().land()
-        await self._action_error_wrapper(self.system.action.land)
+        result = await self._action_error_wrapper(self.system.action.land)
+        if isinstance(result, Exception):
+            self.logger.warning("Couldn't go into land mode")
+        while self.flightmode is not FlightMode.LAND:
+            await asyncio.sleep(1 / self._position_update_freq)
+        self.logger.info("Landing!")
+        while self.in_air:
+            await asyncio.sleep(1 / self._position_update_freq)
+        self.logger.info("Landed!")
         return True
 
     def _stop_tasks(self):
@@ -486,9 +571,9 @@ class DroneMAVSDK(Drone):
             task.cancel()
 
     async def stop(self):
-        await super().stop()
         # Override whatever else is going on and land?
-        Warning("The stop command currently lands the drone and then disarms it")
+        await self.clear_queue()
+        await self.cancel_action()
         if not self.is_connected:
             return True
         await self.land()
@@ -498,6 +583,7 @@ class DroneMAVSDK(Drone):
         self._stop_tasks()
         if self._server_process:
             self._server_process.terminate()
+        await super().stop()
         return True
 
     async def kill(self):
@@ -505,6 +591,7 @@ class DroneMAVSDK(Drone):
         self._stop_tasks()
         if self._server_process:
             self._server_process.terminate()
+        await super().kill()
         return True
 
     # MAVSDK Error wrapping functions
