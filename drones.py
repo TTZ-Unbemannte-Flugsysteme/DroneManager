@@ -12,7 +12,6 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 from urllib.parse import urlparse, urlunparse
-import socket
 
 from typing import Dict, Deque, Tuple
 
@@ -31,6 +30,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
+# TODO: Clear command queue and current command if connection to drone is lost.
 # TODO: health info
 # TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 
@@ -327,10 +327,8 @@ class DroneMAVSDK(Drone):
         return self._batteries
 
     async def _send_initial_beat(self, address, port):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("", port))
-        sock.sendto('.'.encode("utf8"), (address, port))
-        sock.close()
+    #    mavutil.mavlink_connection()
+        pass
 
     async def connect(self, drone_address) -> bool:
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
@@ -427,11 +425,11 @@ class DroneMAVSDK(Drone):
 
     async def _status_check(self):
         async for message in self.system.telemetry.status_text():
-            if message.type == StatusTextType.DEBUG:
+            if message.type is StatusTextType.DEBUG:
                 self.logger.debug(message.text)
             elif message.type in [StatusTextType.INFO, StatusTextType.NOTICE]:
                 self.logger.info(message.text)
-            elif message.type == StatusTextType.WARNING:
+            elif message.type is StatusTextType.WARNING:
                 self.logger.warning(message.text)
             else:
                 self.logger.error(message.text)

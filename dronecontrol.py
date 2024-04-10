@@ -43,12 +43,24 @@ class StatusScreen(Screen):
         super().__init__(*args, **kwargs)
         self.drone = drone
         self.logger = self.app.logger
+        asyncio.create_task(self._update_values())
+
+    async def _update_values(self):
+        while True:
+            try:
+                self.query_one("#name", expect_type=Static).update(f"{self.drone.name}")
+                self.query_one("#address", expect_type=Static).update(f"{self.drone.drone_addr}")
+                self.query_one("#attitude", expect_type=Static).update(f"{self.drone.attitude}")
+                self.query_one("#batteries", expect_type=Static).update(f"{self.drone.batteries}")
+            except textual.app.NoMatches:
+                pass
+            await asyncio.sleep(1/20)
 
     def compose(self):
-        yield Static(f"{self.drone.name}", id="Name")
-        yield Static(f"{self.drone.drone_addr}", id="Address")
-        yield Static(f"{self.drone.attitude}", id="Attitude")
-        yield Static(f"{self.drone.batteries}", id="Batteries")
+        yield Static(f"{self.drone.name}", id="name")
+        yield Static(f"{self.drone.drone_addr}", id="address")
+        yield Static(f"{self.drone.attitude}", id="attitude")
+        yield Static(f"{str(self.drone.batteries)}", id="batteries")
         yield Footer()
 
 
@@ -78,7 +90,7 @@ class CommandScreen(Screen):
 }
 
 #sidebar {
-    width: 105;
+    width: 100;
 }
 """
 
@@ -411,9 +423,9 @@ class CommandScreen(Screen):
 
         status_string = ""
         status_string += "Drone Status\n"
-        format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>15}   {:>10}   {:>6}   {:>6}   {:>6}"
+        format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>10}   {:>6}   {:>6}   {:>8}"
         status_string += format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode", "GPS",
-                                                     "NED", "Vel", "Alt")
+                                                     "NED", "Vel", "H/Y/Alt")
 
         yield Header()
         yield Vertical(
