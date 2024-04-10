@@ -25,6 +25,7 @@ _cur_dir = os.path.dirname(os.path.abspath(__file__))
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 # TODO: health info
+# TODO: Checks on takeoff to prevent taking off if away from (0,0), both mode and command
 
 
 def dist_ned(pos1, pos2):
@@ -220,6 +221,8 @@ class DroneMAVSDK(Drone):
 
     VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff"]
     # This attribute is for checking which flight modes can be changed into manually
+    TAKEOFF_THRESH = 0.3
+    # Maximum distance between current position and (0,0), where takeoff happens
 
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=160):
         Drone.__init__(self, name)
@@ -402,6 +405,8 @@ class DroneMAVSDK(Drone):
         await super().takeoff()
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
+        #if dist_ned(self.position_ned, np.zeros_like(self.position_ned)) < self.TAKEOFF_THRESH:
+        #    raise RuntimeError("Can't take off away from 0,0,0!")
         await self._action_error_wrapper(self.system.action.takeoff)
         while self.flightmode is FlightMode.TAKEOFF:
             await asyncio.sleep(self._position_update_freq)
@@ -423,7 +428,7 @@ class DroneMAVSDK(Drone):
             raise KeyError(f"{flightmode} is not a valid flightmode!")
 
     async def _set_setpoint_ned(self, point):
-        # point should be a numpy array of size (4,) for north, east, down, yaw, with yaw in degrees.
+        # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
         point_ned_yaw = PositionNedYaw(*point)
         await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
         return True
@@ -464,7 +469,7 @@ class DroneMAVSDK(Drone):
                     await asyncio.sleep(1 / self._position_update_freq)
 
     async def orbit(self, radius, velocity, center_lat, center_long, amsl):
-        await super().orbit(radius, velocity,center_lat, center_long, amsl)
+        await super().orbit(radius, velocity, center_lat, center_long, amsl)
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
         yaw_behaviour = OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER
