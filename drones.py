@@ -73,7 +73,7 @@ class Drone(ABC, threading.Thread):
         self.logger.setLevel(logging.DEBUG)
         self.logging_handlers = []
         if log_to_file:
-            file_handler = logging.FileHandler(os.path.join(logdir, f"drone_{name}_{datetime.datetime.utcnow()}.txt"))
+            file_handler = logging.FileHandler(os.path.join(logdir, f"drone_{name}_{datetime.datetime.now()}.txt"))
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(common_formatter)
             self.add_handler(file_handler)

@@ -446,7 +446,7 @@ class DroneManager(App):
         self.logger = logging.getLogger("manager")
         self.logger.setLevel(logging.DEBUG)
 
-        filename = "applog_" + str(datetime.datetime.utcnow()) + ".txt"
+        filename = "applog_" + str(datetime.datetime.now()) + ".txt"
         logdir = os.path.abspath("./logs")
         os.makedirs(logdir, exist_ok=True)
         file_handler = logging.FileHandler(os.path.join(logdir, filename))
