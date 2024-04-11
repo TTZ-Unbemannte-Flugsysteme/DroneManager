@@ -30,7 +30,6 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
-# TODO: Clear command queue and current command if connection to drone is lost.
 # TODO: health info
 # TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 
@@ -88,6 +87,7 @@ class Drone(ABC, threading.Thread):
             pass
 
     async def _task_scheduler(self):
+        # TODO: Have a think about error behaviour
         while True:
             while len(self.action_queue) > 0:
                 action, fut = self.action_queue.popleft()
@@ -95,6 +95,9 @@ class Drone(ABC, threading.Thread):
                 try:
                     result = await self.current_action
                     fut.set_result(result)
+                    self.current_action = None
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     fut.set_exception(e)
             else:
@@ -104,6 +107,11 @@ class Drone(ABC, threading.Thread):
         fut = asyncio.get_running_loop().create_future()
         self.action_queue.append((coro, fut))
         return fut
+
+    def execute_task(self, coro) -> asyncio.Future:
+        self.clear_queue()
+        self.cancel_action()
+        return self.schedule_task(coro)
 
     def add_handler(self, handler):
         self.logger.addHandler(handler)
@@ -217,21 +225,23 @@ class Drone(ABC, threading.Thread):
             self.logger.removeHandler(handler)
         return True
 
-    async def clear_queue(self) -> None:
+    def clear_queue(self) -> None:
         """ Clears the action queue.
 
         Does not cancel the current action.
 
         :return:
         """
+        self.logger.debug("Clearing action queue")
         self.action_queue.clear()
 
-    async def cancel_action(self) -> None:
+    def cancel_action(self) -> None:
         """ Cancels the current action task
 
         :return:
         """
         if self.current_action:
+            self.logger.debug("Cancelling current action!")
             self.current_action.cancel()
 
 
@@ -548,7 +558,7 @@ class DroneMAVSDK(Drone):
             cur_pos = self.position_ned
             if dist_ned(cur_pos, target_pos[:3]) < tolerance:
                 self.logger.info(f"Arrived at {target_pos}!")
-                await self.change_flight_mode("hold")
+                #await self.change_flight_mode("hold")
                 return True
             else:
                 await asyncio.sleep(1/self._position_update_freq)
@@ -586,6 +596,7 @@ class DroneMAVSDK(Drone):
         while self.in_air:
             await asyncio.sleep(1 / self._position_update_freq)
         self.logger.info("Landed!")
+        await self.change_flight_mode("hold")
         return True
 
     def _stop_tasks(self):
@@ -593,9 +604,9 @@ class DroneMAVSDK(Drone):
             task.cancel()
 
     async def stop(self):
-        # Override whatever else is going on and land?
-        await self.clear_queue()
-        await self.cancel_action()
+        # Override whatever else is going on and land
+        self.clear_queue()
+        self.cancel_action()
         if not self.is_connected:
             return True
         await self.land()

@@ -122,17 +122,25 @@ class CommandScreen(Screen):
                                     help="Timeout in seconds for connection attempts.")
         arm_parser = subparsers.add_parser("arm", help="Arm the named drone(s).")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
+        #arm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+        #                                                                      "executing immediately.")
 
         disarm_parser = subparsers.add_parser("disarm", help="Disarm the named drone(s).")
         disarm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to disarm")
+        #disarm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+        #                                                                         "executing immediately.")
 
         takeoff_parser = subparsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
+        takeoff_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+                                                                                  "executing immediately.")
 
         offboard_parser = subparsers.add_parser("mode", help="Change the drone(s) flight mode")
         offboard_parser.add_argument("mode", type=str, help="Target flight mode. Must be one of {}.".format(
             self._drone_class.VALID_FLIGHTMODES))
         offboard_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to change flight mode on.")
+        #offboard_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+        #                                                                           "executing immediately.")
 
         fly_to_parser = subparsers.add_parser("flyto", help="Send the drone to a local coordinate.")
         fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
@@ -163,6 +171,8 @@ class CommandScreen(Screen):
 
         land_parser = subparsers.add_parser("land", help="Land the drone")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
+        land_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+                                                                               "executing immediately.")
 
         stop_parser = subparsers.add_parser("stop", help="Stops (i.e. lands) drones. If no drones are listed, "
                                                          "stops all of them and then exits the application")
@@ -199,7 +209,7 @@ class CommandScreen(Screen):
             elif args.command == "disarm":
                 tmp = asyncio.create_task(self.disarm(args.drones))
             elif args.command == "takeoff":
-                tmp = asyncio.create_task(self.takeoff(args.drones))
+                tmp = asyncio.create_task(self.takeoff(args.drones, schedule=args.schedule))
             elif args.command == "mode":
                 tmp = asyncio.create_task(self.change_flightmode(args.drones, args.mode))
             elif args.command == "flyto":
@@ -211,7 +221,7 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.orbit(args.drone, args.radius, args.vel, args.center_lat,
                                                      args.center_long, args.amsl))
             elif args.command == "land":
-                tmp = asyncio.create_task(self.land(args.drones))
+                tmp = asyncio.create_task(self.land(args.drones, schedule=args.schedule))
             elif args.command == "stop":
                 tmp = asyncio.create_task(self.action_stop(args.drones))
             elif args.command == "kill":
@@ -287,36 +297,38 @@ class CommandScreen(Screen):
                 del drone
                 return False
 
-    async def _multiple_drone_action(self, action, names, start_string, *args, **kwargs):
+    async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         self.logger.info(start_string.format(names))
         try:
-            results = await asyncio.gather(*[action(self.drones[name], *args, **kwargs) for name in names],
-                                           return_exceptions=True)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    self.logger.error(f"Drone {names[i]} failed due to {repr(result)}")
+            coros = [action(self.drones[name], *args, **kwargs) for name in names]
+            if schedule:
+                results = [self.drones[name].schedule_task(coros[i]) for i, name in enumerate(names)]
+                return results
+            else:
+                results = [self.drones[name].execute_task(coros[i]) for i, name in enumerate(names)]
+                return results
         except KeyError:
             self.logger.warning("No drones named {}!".format([name for name in names if name not in self.drones]))
         except Exception as e:
             self.logger.error(repr(e))
 
-    async def arm(self, names):
-        await self._multiple_drone_action(self._drone_class.arm, names, "Arming drone(s) {}.")
+    async def arm(self, names, schedule=False):
+        await self._multiple_drone_action(self._drone_class.arm, names, "Arming drone(s) {}.", schedule=schedule)
 
-    async def disarm(self, names):
-        await self._multiple_drone_action(self._drone_class.disarm, names, "Disarming drone(s) {}.")
+    async def disarm(self, names, schedule=False):
+        await self._multiple_drone_action(self._drone_class.disarm, names, "Disarming drone(s) {}.", schedule=schedule)
 
-    async def takeoff(self, names):
-        await self._multiple_drone_action(self._drone_class.takeoff, names, "Drone(s) {} taking off.")
+    async def takeoff(self, names, schedule=False):
+        await self._multiple_drone_action(self._drone_class.takeoff, names, "Drone(s) {} taking off.", schedule=schedule)
 
-    async def change_flightmode(self, names, flightmode):
+    async def change_flightmode(self, names, flightmode, schedule=False):
         await self._multiple_drone_action(self._drone_class.change_flight_mode,
                                           names,
                                           "Changing flightmode for drone(s) {} to " + flightmode + ".",
-                                          flightmode)
+                                          flightmode, schedule=schedule)
 
-    async def land(self, names):
-        await self._multiple_drone_action(self._drone_class.land, names, "Landing drone(s) {}.")
+    async def land(self, names, schedule=False):
+        await self._multiple_drone_action(self._drone_class.land, names, "Landing drone(s) {}.", schedule=schedule)
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.5):
         point = np.array([x, y, z, yaw])
