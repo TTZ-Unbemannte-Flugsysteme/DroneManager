@@ -88,13 +88,13 @@ class DroneOverview(Static):
             format_string = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>10.7f}   {:>6.3f}   {:>6.3f}   {:>8.3f}"
             output = ""
             output += format_string.format("", "", "", "", "", self.drone.position_global[0],
-                                           self.drone.position_ned[0], self.drone.velocity[0], self.drone.heading) + "\n"
+                                           self.drone.position_ned[0], self.drone.velocity[0], self.drone.attitude[2]) + "\n"
             output += format_string.format(self.drone.name, str(self.drone.is_connected), str(self.drone.is_armed),
                                            str(self.drone.in_air), str(self.drone.flightmode),
                                            self.drone.position_global[1], self.drone.position_ned[1],
-                                           self.drone.velocity[1], self.drone.attitude[2]) + "\n"
+                                           self.drone.velocity[1], self.drone.position_global[3]) + "\n"
             output += format_string.format("", "", "", "", "", self.drone.position_global[2],
-                                           self.drone.position_ned[2], self.drone.velocity[2], self.drone.position_global[3]) + "\n"
+                                           self.drone.position_ned[2], self.drone.velocity[2], self.drone._max_position_discontinuity) + "\n"
             self.update(Text(output))
             await asyncio.sleep(1/20)
 

@@ -16,7 +16,7 @@ from urllib.parse import urlparse, urlunparse
 from typing import Dict, Deque, Tuple
 
 from mavsdk import System
-from mavsdk.telemetry import FlightMode, FixType, StatusText, StatusTextType
+from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 
@@ -62,6 +62,13 @@ class Drone(ABC, threading.Thread):
     VALID_FLIGHTMODES = []
 
     def __init__(self, name, log_to_file=True, *args, **kwargs):
+        """
+
+        :param name:
+        :param log_to_file: Subclasses have to create and connect a file handler themselves
+        :param args:
+        :param kwargs:
+        """
         threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
@@ -72,11 +79,7 @@ class Drone(ABC, threading.Thread):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         self.logging_handlers = []
-        if log_to_file:
-            file_handler = logging.FileHandler(os.path.join(logdir, f"drone_{name}_{datetime.datetime.now()}.txt"))
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(common_formatter)
-            self.add_handler(file_handler)
+        self.log_to_file = log_to_file
         self.start()
         asyncio.create_task(self._task_scheduler())
 
@@ -201,6 +204,7 @@ class Drone(ABC, threading.Thread):
         """
         for handler in self.logging_handlers:
             self.logger.removeHandler(handler)
+        return True
 
     @abstractmethod
     async def kill(self) -> bool:
@@ -211,14 +215,22 @@ class Drone(ABC, threading.Thread):
         """
         for handler in self.logging_handlers:
             self.logger.removeHandler(handler)
+        return True
 
     async def clear_queue(self) -> None:
-        """ Clears the action queue
-        Does not cancel
+        """ Clears the action queue.
+
+        Does not cancel the current action.
+
+        :return:
         """
         self.action_queue.clear()
 
     async def cancel_action(self) -> None:
+        """ Cancels the current action task
+
+        :return:
+        """
         if self.current_action:
             self.current_action.cancel()
 
@@ -281,6 +293,8 @@ class DroneMAVSDK(Drone):
         self._batteries: Dict[int, Battery] = {}
         self._running_tasks = []
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
+
+        self._max_position_discontinuity = - math.inf
 
     @property
     def is_connected(self) -> bool:
@@ -348,6 +362,13 @@ class DroneMAVSDK(Drone):
         async for state in self.system.core.connection_state():
             if state.is_connected:
                 await self._schedule_update_tasks()
+                if self.log_to_file:
+                    log_file_name = f"drone_{self.name}_{datetime.datetime.now()}"
+                    log_file_name = log_file_name.replace(":", "_").replace(".", "_") + ".log"
+                    file_handler = logging.FileHandler(os.path.join(logdir, log_file_name))
+                    file_handler.setLevel(logging.DEBUG)
+                    file_handler.setFormatter(common_formatter)
+                    self.add_handler(file_handler)
                 return True
         return False
 
@@ -395,9 +416,11 @@ class DroneMAVSDK(Drone):
             self._velocity[0] = pos_vel.velocity.north_m_s
             self._velocity[1] = pos_vel.velocity.east_m_s
             self._velocity[2] = pos_vel.velocity.down_m_s
-            self._position_ned[0] = pos_vel.position.north_m
-            self._position_ned[1] = pos_vel.position.east_m
-            self._position_ned[2] = pos_vel.position.down_m
+            new_pos = np.array([pos_vel.position.north_m, pos_vel.position.east_m, pos_vel.position.down_m])
+            shift = dist_ned(self._position_ned, new_pos)
+            if shift > self._max_position_discontinuity:
+                self._max_position_discontinuity = shift
+            self._position_ned = new_pos
 
     async def _att_check(self):
         async for att in self.system.telemetry.attitude_euler():
@@ -525,6 +548,7 @@ class DroneMAVSDK(Drone):
             cur_pos = self.position_ned
             if dist_ned(cur_pos, target_pos[:3]) < tolerance:
                 self.logger.info(f"Arrived at {target_pos}!")
+                await self.change_flight_mode("hold")
                 return True
             else:
                 await asyncio.sleep(1/self._position_update_freq)

@@ -2,10 +2,9 @@ import asyncio
 import datetime
 import os
 from asyncio.exceptions import TimeoutError
-import sys
 import argparse
 import shlex
-from typing import Dict, List
+from typing import Dict
 import numpy as np
 import random
 
@@ -26,9 +25,8 @@ import logging
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
-    "gavin": "udp://192.168.1.35:15565",
-    "corran": "udp://192.168.1.36:15566",
-    "jaina": "udp://192.168.1.37:14550",
+    "gavin": "udp://:15565",
+    "corran": "udp://:15566",
 }
 
 
@@ -269,11 +267,13 @@ class CommandScreen(Screen):
                     self.drones[name] = drone
                     output = self.query_one("#output", expect_type=Log)
                     status_field = self.query_one("#status", expect_type=VerticalScroll)
+                    self.logger.debug(f"Adding log pane handlers to {name}")
                     drone_handler = TextualLogHandler(output)
                     drone_handler.setLevel(logging.INFO)
                     drone_handler.setFormatter(common_formatter)
                     drone.add_handler(drone_handler)
                     self.app.add_status_screen(drone, name)
+                    self.logger.debug(f"Adding overview widget for {name}")
                     drone_status_widget = DroneOverview(drone)
                     self.drone_widgets[name] = drone_status_widget
                     await status_field.mount(drone_status_widget)
@@ -425,7 +425,7 @@ class CommandScreen(Screen):
         status_string += "Drone Status\n"
         format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>10}   {:>6}   {:>6}   {:>8}"
         status_string += format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode", "GPS",
-                                                     "NED", "Vel", "H/Y/Alt")
+                                                     "NED", "Vel", "Y/Alt/PE")
 
         yield Header()
         yield Vertical(
@@ -436,7 +436,7 @@ class CommandScreen(Screen):
                         Static(id="status_header", renderable=status_string),
                         id="status", classes="text evenvert"),
                     Static(id="usage", classes="text evenvert", renderable=self.parser.format_help()),
-                        id="sidebar",
+                    id="sidebar",
                 )
             ),
             InputWithHistory(placeholder="Command line", id="cli")
@@ -458,7 +458,8 @@ class DroneManager(App):
         self.logger = logging.getLogger("manager")
         self.logger.setLevel(logging.DEBUG)
 
-        filename = "applog_" + str(datetime.datetime.now()) + ".txt"
+        filename = f"applog_{datetime.datetime.now()}"
+        filename = filename.replace(":", "_").replace(".", "_") + ".log"
         logdir = os.path.abspath("./logs")
         os.makedirs(logdir, exist_ok=True)
         file_handler = logging.FileHandler(os.path.join(logdir, filename))
