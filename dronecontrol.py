@@ -63,15 +63,12 @@ class StatusScreen(Screen):
 
 
 class CommandScreen(Screen):
-    # TODO: Schedule take-off and land
     # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health"
     #  checks, check what else
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
 
-    # TODO: Safety checks, such as vortex ring state avoidance?
-
-    # How often the status screen is updated.
+    # How often the drone overview screen is updated.
     STATUS_REFRESH_RATE = 20
 
     CSS = """
@@ -122,13 +119,13 @@ class CommandScreen(Screen):
                                     help="Timeout in seconds for connection attempts.")
         arm_parser = subparsers.add_parser("arm", help="Arm the named drone(s).")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
-        #arm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-        #                                                                      "executing immediately.")
+        arm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+                                                                              "executing immediately.")
 
         disarm_parser = subparsers.add_parser("disarm", help="Disarm the named drone(s).")
         disarm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to disarm")
-        #disarm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-        #                                                                         "executing immediately.")
+        disarm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
+                                                                                 "executing immediately.")
 
         takeoff_parser = subparsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
@@ -169,10 +166,16 @@ class CommandScreen(Screen):
         fly_circle_parser.add_argument("center_long", type=float, help="Longitude of the center of the circle")
         fly_circle_parser.add_argument("amsl", type=float, help="Altitude in terms of AMSL.")
 
-        land_parser = subparsers.add_parser("land", help="Land the drone")
+        land_parser = subparsers.add_parser("land", help="Land the drone(s)")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
         land_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
                                                                                "executing immediately.")
+
+        pause_parser = subparsers.add_parser("pause", help="Pause the drone(s) task execution")
+        pause_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to pause")
+
+        resume_parser = subparsers.add_parser("resume", help="Resume the drone(s) task execution")
+        resume_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to resume")
 
         stop_parser = subparsers.add_parser("stop", help="Stops (i.e. lands) drones. If no drones are listed, "
                                                          "stops all of them and then exits the application")
@@ -205,9 +208,9 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.connect_to_drone(args.drone, args.server_address, args.server_port,
                                                                 address, args.timeout), name=args.drone)
             elif args.command == "arm":
-                tmp = asyncio.create_task(self.arm(args.drones))
+                tmp = asyncio.create_task(self.arm(args.drones, schedule=args.schedule))
             elif args.command == "disarm":
-                tmp = asyncio.create_task(self.disarm(args.drones))
+                tmp = asyncio.create_task(self.disarm(args.drones, schedule=args.schedule))
             elif args.command == "takeoff":
                 tmp = asyncio.create_task(self.takeoff(args.drones, schedule=args.schedule))
             elif args.command == "mode":
@@ -222,6 +225,10 @@ class CommandScreen(Screen):
                                                      args.center_long, args.amsl))
             elif args.command == "land":
                 tmp = asyncio.create_task(self.land(args.drones, schedule=args.schedule))
+            elif args.command == "pause":
+                tmp = asyncio.create_task(self.pause(args.drones))
+            elif args.command == "resume":
+                tmp = asyncio.create_task(self.resume(args.drones))
             elif args.command == "stop":
                 tmp = asyncio.create_task(self.action_stop(args.drones))
             elif args.command == "kill":
@@ -329,6 +336,16 @@ class CommandScreen(Screen):
 
     async def land(self, names, schedule=False):
         await self._multiple_drone_action(self._drone_class.land, names, "Landing drone(s) {}.", schedule=schedule)
+
+    async def pause(self, names):
+        self.logger.info(f"Pausing drone(s) {names}")
+        for name in names:
+            self.drones[name].pause()
+
+    async def resume(self, names):
+        self.logger.info(f"Resuming task execution for drone(s) {names}")
+        for name in names:
+            self.drones[name].resume()
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.5):
         point = np.array([x, y, z, yaw])

@@ -19,6 +19,7 @@ from mavsdk import System
 from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
+from mavsdk.manual_control import ManualControlError
 
 import logging
 
@@ -30,6 +31,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
+# TODO: change_flight_mode scheduling, more flightmodes, in particular ALTCTRL and POSCTRL
 # TODO: health info
 # TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 
@@ -79,6 +81,7 @@ class Drone(ABC, threading.Thread):
         self.logger.setLevel(logging.DEBUG)
         self.logging_handlers = []
         self.log_to_file = log_to_file
+        self.is_paused = False
         self.start()
         asyncio.create_task(self._task_scheduler())
 
@@ -90,18 +93,21 @@ class Drone(ABC, threading.Thread):
         # TODO: Have a think about error behaviour
         while True:
             while len(self.action_queue) > 0:
-                action, fut = self.action_queue.popleft()
-                self.current_action = asyncio.create_task(action)
-                try:
-                    result = await self.current_action
-                    fut.set_result(result)
-                    self.current_action = None
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    fut.set_exception(e)
+                if self.is_paused:
+                    await asyncio.sleep(0.1)
+                else:
+                    action, fut = self.action_queue.popleft()
+                    self.current_action = asyncio.create_task(action)
+                    try:
+                        result = await self.current_action
+                        fut.set_result(result)
+                        self.current_action = None
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        fut.set_exception(e)
             else:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.1)
 
     def schedule_task(self, coro) -> asyncio.Future:
         fut = asyncio.get_running_loop().create_future()
@@ -116,6 +122,23 @@ class Drone(ABC, threading.Thread):
     def add_handler(self, handler):
         self.logger.addHandler(handler)
         self.logging_handlers.append(handler)
+
+    def pause(self):
+        """ Pause task execution by setting self.is_paused to True.
+
+        Note that it is not possible to "pause" what the drone is doing in a general way. What "pausing" a task does or
+        if a task can even be paused depends on the specific task and implementation. Subclasses must define and
+        implement this behaviour themselves.
+        However, pausing is always possible between tasks, and this is the default behaviour for subclasses that do not
+        implement any of their own: When paused, drones will finish their current task and then wait until unpaused
+        before beginning the next task."""
+        self.is_paused = True
+        self.logger.debug("Pausing...")
+
+    def resume(self):
+        """ Resume the current task. """
+        self.is_paused = False
+        self.logger.debug("Resuming...")
 
     @property
     @abstractmethod
@@ -278,7 +301,7 @@ def parse_address(string=None, scheme=None, host=None, port=None, return_string=
 
 class DroneMAVSDK(Drone):
 
-    VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff"]
+    VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff", "position", "altitude"]
     # This attribute is for checking which flight modes can be changed into manually
     TAKEOFF_THRESH = 0.3
     # Maximum distance between current position and (0,0), where takeoff happens
@@ -475,6 +498,8 @@ class DroneMAVSDK(Drone):
             self.logger.info("Armed!")
         else:
             self.logger.warning("Couldn't arm!")
+        while not self.is_armed:
+            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     async def disarm(self):
@@ -485,6 +510,8 @@ class DroneMAVSDK(Drone):
             self.logger.info("Disarmed!")
         else:
             self.logger.warning("Couldn't disarm!")
+        while self.is_armed:
+            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     async def _can_takeoff(self):
@@ -511,6 +538,7 @@ class DroneMAVSDK(Drone):
     async def change_flight_mode(self, flightmode: str):
         self.logger.info(f"Changing flight mode to {flightmode}")
         await super().change_flight_mode(flightmode)
+        result = False
         if flightmode == "hold":
             result = await self._action_error_wrapper(self.system.action.hold)
         elif flightmode == "offboard":
@@ -522,6 +550,10 @@ class DroneMAVSDK(Drone):
         elif flightmode == "takeoff":
             await self._can_takeoff()
             result = await self._action_error_wrapper(self.system.action.takeoff)
+        elif flightmode == "position":
+            result = await self.__manual_control_error_wrapper(self.system.manual_control.start_position_control())
+        elif flightmode == "altitude":
+            result = await self.__manual_control_error_wrapper(self.system.manual_control.start_altitude_control())
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
         if result and not isinstance(result, Exception):
@@ -548,6 +580,7 @@ class DroneMAVSDK(Drone):
             raise RuntimeError("Can't fly a landed or unarmed drone!")
 
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
+        cur_paused = False
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
         await self._can_do_in_air_commands()
@@ -555,13 +588,24 @@ class DroneMAVSDK(Drone):
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         while True:
-            cur_pos = self.position_ned
-            if dist_ned(cur_pos, target_pos[:3]) < tolerance:
-                self.logger.info(f"Arrived at {target_pos}!")
-                #await self.change_flight_mode("hold")
-                return True
-            else:
-                await asyncio.sleep(1/self._position_update_freq)
+            if self.is_paused and not cur_paused:
+                cur_paused = True
+                cur_pos_yaw = np.zeros((4,))
+                cur_pos_yaw[:3] = self.position_ned
+                cur_pos_yaw[3] = self.attitude[2]
+                self.logger.debug(f"Pausing flyto command, cur pos: {cur_pos_yaw}")
+                await self._set_setpoint_ned(cur_pos_yaw)
+            elif cur_paused and not self.is_paused:
+                cur_paused = False
+                self.logger.debug("Unpausing flyto command")
+                await self._set_setpoint_ned(target_pos)
+            elif not self.is_paused and not cur_paused:
+                cur_pos = self.position_ned
+                if dist_ned(cur_pos, target_pos[:3]) < tolerance:
+                    self.logger.info(f"Arrived at {target_pos}!")
+                    #await self.change_flight_mode("hold")
+                    return True
+            await asyncio.sleep(1/self._position_update_freq)
 
     async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
         await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
@@ -641,6 +685,14 @@ class DroneMAVSDK(Drone):
         try:
             await func(*args, **kwargs)
         except OffboardError as e:
+            self.logger.error(e._result.result_str)
+            return False
+        return True
+
+    async def __manual_control_error_wrapper(self, func, *args, **kwargs):
+        try:
+            await asyncio.wait_for(func(*args, **kwargs), timeout=5)
+        except ManualControlError as e:
             self.logger.error(e._result.result_str)
             return False
         return True
