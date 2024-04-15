@@ -34,6 +34,7 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
+# TODO: Fix the dummy drone so it actually works again
 
 
 def dist_ned(pos1, pos2):
@@ -613,28 +614,25 @@ class DroneMAVSDK(Drone):
         await self._can_do_in_air_commands()
         await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
         while True:
-            while True:
-                if self.is_paused and not cur_paused:
-                    cur_paused = True
-                    cur_lat = self.position_global[0]
-                    cur_long = self.position_global[0]
-                    cur_amsl = self.position_global[0]
-                    cur_yaw = self.attitude[2]
-                    self.logger.debug(f"Pausing flytogps command, current position: "
-                                      f"{cur_lat, cur_long, cur_amsl, cur_yaw}")
-                    await self._action_error_wrapper(self.system.action.goto_location,
-                                                     cur_lat, cur_long, cur_amsl, cur_yaw)
-                elif cur_paused and not self.is_paused:
-                    cur_paused = False
-                    self.logger.debug("Unpausing flytogps command")
-                    await self._action_error_wrapper(self.system.action.goto_location,
-                                                     latitude, longitude, amsl, yaw)
-                elif not self.is_paused and not cur_paused:
-                    lat1, long1, alt1 = self.position_global[:3]
-                    if dist_gps(lat1, long1, alt1, latitude, longitude, amsl) < tolerance:
-                        self.logger.info(f"Arrived at {(latitude, longitude, amsl)}")
-                        return True
-                await asyncio.sleep(1 / self._position_update_freq)
+            if self.is_paused and not cur_paused:
+                cur_paused = True
+                cur_lat = self.position_global[0]
+                cur_long = self.position_global[0]
+                cur_amsl = self.position_global[0]
+                cur_yaw = self.attitude[2]
+                self.logger.debug(f"Pausing flytogps command, current position: {cur_lat, cur_long, cur_amsl, cur_yaw}")
+                await self._action_error_wrapper(self.system.action.goto_location,
+                                                 cur_lat, cur_long, cur_amsl, cur_yaw)
+            elif cur_paused and not self.is_paused:
+                cur_paused = False
+                self.logger.debug("Unpausing flytogps command")
+                await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
+            elif not self.is_paused and not cur_paused:
+                lat1, long1, alt1 = self.position_global[:3]
+                if dist_gps(lat1, long1, alt1, latitude, longitude, amsl) < tolerance:
+                    self.logger.info(f"Arrived at {(latitude, longitude, amsl)}")
+                    return True
+            await asyncio.sleep(1 / self._position_update_freq)
 
     async def orbit(self, radius, velocity, center_lat, center_long, amsl):
         await super().orbit(radius, velocity, center_lat, center_long, amsl)

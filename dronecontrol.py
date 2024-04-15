@@ -65,6 +65,8 @@ class StatusScreen(Screen):
 class CommandScreen(Screen):
     # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health"
     #  checks, check what else
+    # TODO: MAVLink snooper with pymavlink
+    # TODO: Figure out how to get voxl values from the drone
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
 
