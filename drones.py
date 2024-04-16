@@ -395,6 +395,7 @@ class DroneMAVSDK(Drone):
         await self.system.connect(system_address=self.drone_addr)
         async for state in self.system.core.connection_state():
             if state.is_connected:
+                await self._configure_message_rates()
                 await self._schedule_update_tasks()
                 if self.log_to_file:
                     log_file_name = f"drone_{self.name}_{datetime.datetime.now()}"
@@ -417,6 +418,11 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._att_check()))
         self._running_tasks.append(asyncio.create_task(self._battery_check()))
         self._running_tasks.append(asyncio.create_task(self._status_check()))
+
+    async def _configure_message_rates(self) -> None:
+        await self.system.telemetry.set_rate_position(20)
+        await self.system.telemetry.set_rate_position_velocity_ned(20)
+        await self.system.telemetry.set_rate_attitude_euler(20)
 
     async def _connect_check(self):
         async for state in self.system.core.connection_state():
@@ -521,7 +527,10 @@ class DroneMAVSDK(Drone):
         #if dist_ned(self.position_ned, np.zeros_like(self.position_ned)) < self.TAKEOFF_THRESH:
         #    raise RuntimeError("Can't take off away from 0,0,0!")
 
-    async def takeoff(self):
+    async def takeoff(self) -> bool:
+        return await self._takeoff_using_takeoffmode()
+
+    async def _takeoff_using_takeoffmode(self):
         self.logger.info("Trying to take off...")
         await super().takeoff()
         await self._can_takeoff()
@@ -535,6 +544,25 @@ class DroneMAVSDK(Drone):
             await asyncio.sleep(1/self._position_update_freq)
         self.logger.info("Completed takeoff!")
         return True
+
+    async def _takeoff_using_offboard(self, altitude=2.5, tolerance=0.25):
+        self.logger.info("Trying to take off in offboard mode")
+        await super().takeoff()
+        await self._can_takeoff()
+        target_pos_yaw = np.zeros((4,))
+        target_pos_yaw[:3] = self.position_ned
+        target_pos_yaw[3] = self.attitude[2]
+        target_pos_yaw[2] -= altitude  # Setpoint higher than current position
+        await self._set_setpoint_ned(target_pos_yaw)
+        if self._flightmode != FlightMode.OFFBOARD:
+            await self.change_flight_mode("offboard")
+        self.logger.info("Taking off!")
+        while True:
+            cur_pos = self.position_ned
+            if dist_ned(cur_pos, target_pos_yaw[:3]) < tolerance:
+                self.logger.info(f"Takeoff completed!")
+                return True
+            await asyncio.sleep(1 / self._position_update_freq)
 
     async def change_flight_mode(self, flightmode: str):
         self.logger.info(f"Changing flight mode to {flightmode}")
@@ -584,7 +612,7 @@ class DroneMAVSDK(Drone):
         cur_paused = False
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
-        await self._can_do_in_air_commands()
+        #await self._can_do_in_air_commands()
         await self._set_setpoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
