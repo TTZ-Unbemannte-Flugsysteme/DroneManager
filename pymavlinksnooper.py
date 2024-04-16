@@ -32,7 +32,8 @@ def _strencode_mav(msg):
 
 
 class Snooper:
-    def __init__(self):
+    def __init__(self, dialect="cubepilot"):
+        self.dialect = dialect
         self.source_system = 245
         self.source_component = 201
         self.con_drone: mavutil.mavudp | None = None
@@ -59,13 +60,13 @@ class Snooper:
     def connect_gcs(self, address):
         self.con_gcs = mavutil.mavlink_connection("udpout:" + address,
                                                   source_system=self.source_system,
-                                                  source_component=self.source_component, dialect="common")
+                                                  source_component=self.source_component, dialect=self.dialect)
         self.running_tasks.add(asyncio.create_task(self._send_heartbeats_gcs()))
 
     def connect_drone(self, address):
         self.con_drone = mavutil.mavlink_connection("udpin:" + address,
                                                     source_system=self.source_system,
-                                                    source_component=self.source_component, dialect="common")
+                                                    source_component=self.source_component, dialect=self.dialect)
         self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
 
     async def _listen_gcs(self):
