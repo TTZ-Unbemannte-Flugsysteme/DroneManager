@@ -44,17 +44,16 @@ class Snooper:
         self.con_gcs = mavutil.mavlink_connection("udpout:" + address,
                                                   source_system=self.source_system,
                                                   source_component=self.source_component, dialect=self.dialect)
-        self.running_tasks.add(asyncio.create_task(self._send_heartbeats_gcs()))
+        self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
 
     def connect_drone(self, address):
         self.con_drone = mavutil.mavlink_connection("udpin:" + address,
                                                     source_system=self.source_system,
                                                     source_component=self.source_component, dialect=self.dialect)
-        self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
+        self.running_tasks.add(asyncio.create_task(self._send_pings_drone()))
 
     async def _process_message_for_return(self, msg):
         msg_id = msg._header.msgId  # msg.id is sometimes not set correctly.
-        msg.id = msg_id
         if msg_id == -1:
             self.logger.warning(f"Message with BAD_DATE id, can't resend: {msg_id}, {msg.to_dict()}")
             return False
@@ -63,7 +62,7 @@ class Snooper:
                                 f"{msg.fieldnames}, {msg.fieldtypes}, {msg.orders}, {msg.lengths}, "
                                 f"{msg.array_lengths}, {msg.crc_extra}, {msg.unpacker}")
             return False
-        msg_class = mavutil.mavlink.mavlink_map[msg.id]
+        msg_class = mavutil.mavlink.mavlink_map[msg_id]
         msg.__class__ = msg_class
         return True
         # maybe like this?: message_class(**msg.to_dict())
@@ -104,12 +103,12 @@ class Snooper:
             else:
                 await asyncio.sleep(1)
 
-    async def _send_heartbeats_gcs(self):
+    async def _send_pings_gcs(self):
         while True:
             self.con_gcs.mav.ping_send(int(time.time() * 1e6), 0, 0, 0)
             await asyncio.sleep(1)
 
-    async def _send_heartbeats_drone(self):
+    async def _send_pings_drone(self):
         while True:
             self.con_drone.mav.ping_send(int(time.time() * 1e6), 0, 0, 0)
             await asyncio.sleep(1)
