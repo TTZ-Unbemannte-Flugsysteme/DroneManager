@@ -21,6 +21,8 @@ from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
 from mavsdk.manual_control import ManualControlError
 
+from mavpassthrough import MAVPassthrough
+
 import logging
 
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +37,7 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 # TODO: health info
 # TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 # TODO: Fix the dummy drone so it actually works again
+# TODO: Unparsable IPs currently hang, figure out why
 
 
 def dist_ned(pos1, pos2):
@@ -63,14 +66,7 @@ class Drone(ABC, threading.Thread):
 
     VALID_FLIGHTMODES = []
 
-    def __init__(self, name, log_to_file=True, *args, **kwargs):
-        """
-
-        :param name:
-        :param log_to_file: Subclasses have to create and connect a file handler themselves
-        :param args:
-        :param kwargs:
-        """
+    def __init__(self, name, *args, log_to_file=True, **kwargs):
         threading.Thread.__init__(self)
         self.name = name
         self.drone_addr = None
@@ -82,6 +78,13 @@ class Drone(ABC, threading.Thread):
         self.logger.setLevel(logging.DEBUG)
         self.logging_handlers = []
         self.log_to_file = log_to_file
+        if self.log_to_file:
+            log_file_name = f"drone_{self.name}_{datetime.datetime.now()}"
+            log_file_name = log_file_name.replace(":", "_").replace(".", "_") + ".log"
+            file_handler = logging.FileHandler(os.path.join(logdir, log_file_name))
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(common_formatter)
+            self.add_handler(file_handler)
         self.is_paused = False
         self.start()
         asyncio.create_task(self._task_scheduler())
@@ -123,6 +126,13 @@ class Drone(ABC, threading.Thread):
     def add_handler(self, handler):
         self.logger.addHandler(handler)
         self.logging_handlers.append(handler)
+
+    async def stop_execution(self):
+        """ Stops all tasks, closes all connections, etc.
+
+        :return:
+        """
+        pass
 
     def pause(self):
         """ Pause task execution by setting self.is_paused to True.
@@ -285,13 +295,9 @@ def parse_address(string=None, scheme=None, host=None, port=None, return_string=
     if scheme is None:
         scheme = "udp"
     if host is None:
-        host = ""
+        host = "127.0.0.1"
     elif host == "localhost":
-        host = ""
-    elif host == "127.0.0.1":
-        host = ""
-    elif host == "0.0.0.0":
-        host = ""
+        host = "127.0.0.1"
     if port is None:
         port = 50051
     if return_string:
@@ -307,7 +313,7 @@ class DroneMAVSDK(Drone):
     TAKEOFF_THRESH = 0.3
     # Maximum distance between current position and (0,0), where takeoff happens
 
-    def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=160):
+    def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=190):
         Drone.__init__(self, name)
         self.compid = compid
         self.system: System | None = None
@@ -329,6 +335,7 @@ class DroneMAVSDK(Drone):
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
+        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK")
 
     @property
     def is_connected(self) -> bool:
@@ -374,36 +381,39 @@ class DroneMAVSDK(Drone):
     def batteries(self) -> Dict[int, Battery]:
         return self._batteries
 
-    async def _send_initial_beat(self, address, port):
-    #    mavutil.mavlink_connection()
-        pass
-
     async def connect(self, drone_address) -> bool:
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
+        scheme, ip, port = parse_address(string=drone_address, return_string=False)
+        assert scheme == "udp"
+        self.drone_addr = f"{scheme}://{ip}:{port}"
+        self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
+        mavsdk_passthrough_port = port + 1000
+        mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
+
+        if self.server_addr is None:
+            self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
+                              f"connection {mavsdk_passthrough_string}")
         if self.server_addr is None and platform.system() == "Windows":
-            self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {drone_address}",
+            self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {mavsdk_passthrough_string}",
                                          stdout=DEVNULL, stderr=DEVNULL)
             self.server_addr = "127.0.0.1"
         self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
+
         _, self.server_addr, self.server_port = parse_address(scheme="udp",
                                                               host=self.server_addr,
                                                               port=self.server_port,
                                                               return_string=False)
-        scheme, ip, port = parse_address(string=drone_address, return_string=False)
-        self.drone_addr = "{scheme}://{ip}:{port}".format(scheme=scheme, ip=ip, port=port)
-        await self._send_initial_beat(ip, port)
-        await self.system.connect(system_address=self.drone_addr)
+
+        # Create passthrough
+        self.logger.debug(f"Connecting passthrough to drone @ {ip}:{port} and MAVSDK server @ {self.server_addr}:{mavsdk_passthrough_port}")
+        self._passthrough.connect_drone(f"{ip}:{port}")
+        self._passthrough.connect_gcs(f"{self.server_addr}:{mavsdk_passthrough_port}")
+
+        await self.system.connect(system_address=mavsdk_passthrough_string)
         async for state in self.system.core.connection_state():
             if state.is_connected:
                 await self._configure_message_rates()
                 await self._schedule_update_tasks()
-                if self.log_to_file:
-                    log_file_name = f"drone_{self.name}_{datetime.datetime.now()}"
-                    log_file_name = log_file_name.replace(":", "_").replace(".", "_") + ".log"
-                    file_handler = logging.FileHandler(os.path.join(logdir, log_file_name))
-                    file_handler.setLevel(logging.DEBUG)
-                    file_handler.setFormatter(common_formatter)
-                    self.add_handler(file_handler)
                 return True
         return False
 
@@ -609,6 +619,7 @@ class DroneMAVSDK(Drone):
             raise RuntimeError("Can't fly a landed or unarmed drone!")
 
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
+        self.logger.info(f"Flying to {target_pos} with tolerance {tolerance}m")
         cur_paused = False
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
@@ -637,9 +648,10 @@ class DroneMAVSDK(Drone):
             await asyncio.sleep(1/self._position_update_freq)
 
     async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
+        self.logger.info(f"Flying to {latitude, longitude, amsl, yaw} with tolerance {tolerance}m")
         cur_paused = False
         await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
-        await self._can_do_in_air_commands()
+        #await self._can_do_in_air_commands()
         await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
         while True:
             if self.is_paused and not cur_paused:
@@ -685,9 +697,9 @@ class DroneMAVSDK(Drone):
         await self.change_flight_mode("hold")
         return True
 
-    def _stop_tasks(self):
-        for task in self._running_tasks:
-            task.cancel()
+    async def stop_execution(self):
+        await self._passthrough.stop()
+        self.system.__del__()
 
     async def stop(self):
         # Override whatever else is going on and land
@@ -699,7 +711,7 @@ class DroneMAVSDK(Drone):
         while self.in_air:
             await asyncio.sleep(0.1)
         await self.disarm()
-        self._stop_tasks()
+        await self.stop_execution()
         if self._server_process:
             self._server_process.terminate()
         await super().stop()
@@ -707,7 +719,7 @@ class DroneMAVSDK(Drone):
 
     async def kill(self):
         await self._action_error_wrapper(self.system.action.kill)
-        self._stop_tasks()
+        await self.stop_execution()
         if self._server_process:
             self._server_process.terminate()
         await super().kill()

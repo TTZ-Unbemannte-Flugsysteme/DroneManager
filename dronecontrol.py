@@ -37,10 +37,10 @@ class StatusScreen(Screen):
         Binding("d", "app.cycle_drones_up", "Cycle Drone ->"),
     }
 
-    def __init__(self, drone, *args, **kwargs):
+    def __init__(self, drone, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.drone = drone
-        self.logger = self.app.logger
+        self.logger = logger
         asyncio.create_task(self._update_values())
 
     async def _update_values(self):
@@ -91,7 +91,7 @@ class CommandScreen(Screen):
 }
 """
 
-    def __init__(self, drone_class, *args, **kwargs):
+    def __init__(self, drone_class, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._drone_class = drone_class
         self.drones: Dict[str, Drone] = {}
@@ -101,7 +101,7 @@ class CommandScreen(Screen):
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self.drone_lock = asyncio.Lock()
         self._kill_counter = 0  # Require kill all to be entered twice
-        self.logger = self.app.logger
+        self.logger = logger
 
         self.parser = ArgParser(
             description="Interactive command line interface to connect and control multiple drones")
@@ -255,7 +255,7 @@ class CommandScreen(Screen):
                                mavsdk_server_address: str | None,
                                mavsdk_server_port: int,
                                drone_address: str,
-                               timeout: float, compid=160):
+                               timeout: float, compid=190):
         _, parsed_addr, parsed_port = parse_address(string=drone_address)
         parsed_connection_string = parse_address(string=drone_address, return_string=True)
         self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
@@ -299,11 +299,11 @@ class CommandScreen(Screen):
                     return True
                 else:
                     self.logger.warning(f"Failed to connect to drone {name}!")
-                    self._remove_drone_object(name, drone)
+                    await self._remove_drone_object(name, drone)
                     return False
             except TimeoutError:
                 self.logger.warning(f"Connection attempts to {name} timed out!")
-                del drone
+                await self._remove_drone_object(name, drone)
                 return False
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
@@ -384,25 +384,31 @@ class CommandScreen(Screen):
     async def _stop_drone(self, name):
         drone = self.drones[name]
         result = await drone.stop()
-        self._remove_drone_object(name, drone)
+        await self._remove_drone_object(name, drone)
         return result
 
     async def _kill_drone(self, name):
         drone = self.drones[name]
         result = await drone.kill()
-        self._remove_drone_object(name, drone)
+        await self._remove_drone_object(name, drone)
         return result
 
-    def _remove_drone_object(self, name, drone: Drone):
+    async def _remove_drone_object(self, name, drone: Drone):
         try:
             self.drones.pop(name)
         except KeyError:
             pass
-        self.app.remove_status_screen(name)
-        self.drone_widgets[name].remove()
-        del drone.system
-        drone.should_stop.set()
-        del drone
+        try:
+            self.app.remove_status_screen(name)
+            await self.drone_widgets[name].remove()
+        except Exception:
+            pass
+        try:
+            await drone.stop_execution()
+            drone.should_stop.set()
+            del drone
+        except Exception as e:
+            self.logger.error(repr(e), exc_info=True)
 
     async def action_stop(self, names):
         stop_app = False
@@ -486,7 +492,7 @@ class DroneManager(App):
         self._drone_class = drone_class
         self.status_screens = []
         self.status_index = 0
-        self.logger = logging.getLogger("manager")
+        self.logger = logging.getLogger("DroneControl")
         self.logger.setLevel(logging.DEBUG)
 
         filename = f"applog_{datetime.datetime.now()}"
@@ -500,14 +506,14 @@ class DroneManager(App):
         super().__init__()
 
     def on_mount(self):
-        screen = CommandScreen(self._drone_class, name="control-screen")
+        screen = CommandScreen(self._drone_class, logger=self.logger, name="control-screen")
         self.install_screen(screen, name=screen.name)
         self.add_mode("control", base_screen=screen)
         self.switch_mode("control")
 
     def add_status_screen(self, drone, name):
         self.logger.debug(f"Adding a new status screen {name}")
-        screen = StatusScreen(drone, name=name)
+        screen = StatusScreen(drone, logger=self.logger, name=name)
         self.install_screen(screen, name=screen.name)
         self.add_mode(name, base_screen=screen)
         self.status_screens.append(name)
