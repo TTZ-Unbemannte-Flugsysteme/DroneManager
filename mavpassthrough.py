@@ -12,6 +12,7 @@ formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - 
 
 
 # TODO: Routing between multiple GCS so we can have my app and QGroundControl connected at the same time
+# TODO: Disable our own pings/heartbeats while we have a connected pair (not important at all)
 
 
 class MAVPassthrough:

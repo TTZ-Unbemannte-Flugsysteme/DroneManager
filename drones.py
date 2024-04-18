@@ -35,9 +35,7 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
-# TODO: A lot of logging on drone state, drone commands, command queue, clearing queue, etc...
 # TODO: Fix the dummy drone so it actually works again
-# TODO: Unparsable IPs currently hang, figure out why
 
 
 def dist_ned(pos1, pos2):
@@ -408,7 +406,6 @@ class DroneMAVSDK(Drone):
         self.logger.debug(f"Connecting passthrough to drone @ {ip}:{port} and MAVSDK server @ {self.server_addr}:{mavsdk_passthrough_port}")
         self._passthrough.connect_drone(f"{ip}:{port}")
         self._passthrough.connect_gcs(f"{self.server_addr}:{mavsdk_passthrough_port}")
-
         await self.system.connect(system_address=mavsdk_passthrough_string)
         async for state in self.system.core.connection_state():
             if state.is_connected:

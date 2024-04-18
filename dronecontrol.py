@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import socket
 from asyncio.exceptions import TimeoutError
 import argparse
 import shlex
@@ -65,7 +66,6 @@ class StatusScreen(Screen):
 class CommandScreen(Screen):
     # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health"
     #  checks, check what else
-    # TODO: MAVLink snooper with pymavlink
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
@@ -256,8 +256,12 @@ class CommandScreen(Screen):
                                mavsdk_server_port: int,
                                drone_address: str,
                                timeout: float, compid=190):
-        _, parsed_addr, parsed_port = parse_address(string=drone_address)
-        parsed_connection_string = parse_address(string=drone_address, return_string=True)
+        try:
+            _, parsed_addr, parsed_port = parse_address(string=drone_address)
+            parsed_connection_string = parse_address(string=drone_address, return_string=True)
+        except Exception as e:
+            self.logger.info(repr(e))
+            return False
         self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
         async with self.drone_lock:
             try:
@@ -280,7 +284,16 @@ class CommandScreen(Screen):
                         self.logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
                 drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
-                connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
+                try:
+                    connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
+                except (OSError, socket.gaierror) as e:
+                    self.logger.info(f"Address error, probably due to invalid address")
+                    self.logger.debug(f"{repr(e)}", exc_info=True)
+                    return False
+                except AssertionError as e:
+                    self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
+                    self.logger.debug(f"{repr(e)}", exc_info=True)
+                    return False
                 if connected:
                     self.logger.info(f"Connected to {name}!")
                     self.drones[name] = drone
@@ -425,7 +438,7 @@ class CommandScreen(Screen):
                 # If one of the drones encounters an excepton
                 if isinstance(result, Exception):
                     self.logger.critical(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
-                                    f"{repr(result)}!")
+                                    f"{repr(result)}!", exc_info=True)
                     stop_app = False
             if stop_app:
                 self.logger.info("All drones stopped, exiting...")
