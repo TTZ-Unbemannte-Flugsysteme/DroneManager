@@ -7,6 +7,7 @@ import random
 import threading
 import haversine
 import platform
+import time
 from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
 
@@ -535,7 +536,13 @@ class DroneMAVSDK(Drone):
         #    raise RuntimeError("Can't take off away from 0,0,0!")
 
     async def takeoff(self) -> bool:
-        return await self._takeoff_using_takeoffmode()
+        return await self._takeoff_using_offboard()
+
+    def _get_pos_ned_yaw(self):
+        pos_yaw = np.zeros((4,))
+        pos_yaw[:3] = self.position_ned
+        pos_yaw[3] = self.attitude[2]
+        return pos_yaw
 
     async def _takeoff_using_takeoffmode(self):
         self.logger.info("Trying to take off...")
@@ -553,12 +560,10 @@ class DroneMAVSDK(Drone):
         return True
 
     async def _takeoff_using_offboard(self, altitude=2.5, tolerance=0.25):
-        self.logger.info("Trying to take off in offboard mode")
+        self.logger.info("Trying to take off in offboard mode...")
         await super().takeoff()
         await self._can_takeoff()
-        target_pos_yaw = np.zeros((4,))
-        target_pos_yaw[:3] = self.position_ned
-        target_pos_yaw[3] = self.attitude[2]
+        target_pos_yaw = self._get_pos_ned_yaw()
         target_pos_yaw[2] -= altitude  # Setpoint higher than current position
         await self._set_setpoint_ned(target_pos_yaw)
         if self._flightmode != FlightMode.OFFBOARD:
@@ -682,6 +687,38 @@ class DroneMAVSDK(Drone):
     async def land(self):
         self.logger.info("Trying to land...")
         await super().land()
+        await self._land_using_offbord_mode()
+
+    async def _land_using_offbord_mode(self, error_thresh=0.003, min_time=0.5):
+        self.logger.info("Landing!")
+        ema_alt_error = 0
+        going_down = True
+        old_pos = self.position_ned
+        start_time = time.time()
+        target_pos = self._get_pos_ned_yaw()
+        target_pos[2] += 0.1
+        await self._set_setpoint_ned(target_pos)
+        if self._flightmode != FlightMode.OFFBOARD:
+            await self.change_flight_mode("offboard")
+        while going_down:
+            cur_pos = self.position_ned
+            ema_alt_error = dist_ned(cur_pos, old_pos) + 0.33 * ema_alt_error
+            self.logger.debug(f"Landing EMA {ema_alt_error}")
+            if ema_alt_error < error_thresh:
+                self.logger.debug("Position estimate things we landed")
+            if time.time() > start_time + min_time:
+                self.logger.debug("Left minimum landing time")
+            if ema_alt_error < error_thresh and time.time() > start_time + min_time:
+                break
+            old_pos = cur_pos.copy()
+            cur_alt = self.position_ned[2]
+            target_pos[2] = cur_alt + 0.5
+            await self._set_setpoint_ned(target_pos)
+            await asyncio.sleep(1/self._position_update_freq)
+        self.logger.info("Landed!")
+        await self.disarm()
+
+    async def _land_using_landmode(self):
         result = await self._action_error_wrapper(self.system.action.land)
         if isinstance(result, Exception):
             self.logger.warning("Couldn't go into land mode")

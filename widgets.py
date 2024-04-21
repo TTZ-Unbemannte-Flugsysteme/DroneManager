@@ -1,6 +1,7 @@
 import asyncio
 
 from textual.widgets import Input, Log, Static
+from mavsdk.telemetry import FlightMode
 from textual.binding import Binding
 from rich.text import Text
 
@@ -85,6 +86,10 @@ class DroneOverview(Static):
 
     async def update_display(self):
         while True:
+            if self.drone.flightmode == FlightMode.OFFBOARD:
+                color = "green"
+            else:
+                color = "red"
             format_string = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>10.7f}   {:>6.3f}   {:>6.3f}   {:>8.3f}"
             output = ""
             output += format_string.format("", "", "", "", "", self.drone.position_global[0],
@@ -95,7 +100,7 @@ class DroneOverview(Static):
                                            self.drone.velocity[1], self.drone.position_global[3]) + "\n"
             output += format_string.format("", "", "", "", "", self.drone.position_global[2],
                                            self.drone.position_ned[2], self.drone.velocity[2], self.drone._max_position_discontinuity) + "\n"
-            self.update(Text(output))
+            self.update(Text(output, style=f"bold {color}"))
             await asyncio.sleep(1/20)
 
 
