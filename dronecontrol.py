@@ -26,8 +26,10 @@ import logging
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
-    "gavin": "udp://:15565",
-    "corran": "udp://:15566",
+    "luke":   "udp://:14561",
+    "gavin":  "udp://:14565",
+    "corran": "udp://:14566",
+    "jaina":  "udp://:14567"
 }
 
 
@@ -395,10 +397,13 @@ class CommandScreen(Screen):
             self.logger.error(repr(e))
 
     async def _stop_drone(self, name):
-        drone = self.drones[name]
-        result = await drone.stop()
-        await self._remove_drone_object(name, drone)
-        return result
+        try:
+            drone = self.drones[name]
+            result = await drone.stop()
+            await self._remove_drone_object(name, drone)
+            return result
+        except KeyError:
+            self.logger.debug(f"Don't have a drone with name {name}")
 
     async def _kill_drone(self, name):
         drone = self.drones[name]

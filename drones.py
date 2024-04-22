@@ -34,6 +34,9 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
+# TODO: Fix passthrough so it works with real drones, look into pymavlink on windows maybe? OSError Invalid arugment
+#  UDP_MAX_PACKET_LEN
+# TODO: Exception catching on the passthrough
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: Fix the dummy drone so it actually works again
@@ -334,7 +337,7 @@ class DroneMAVSDK(Drone):
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
-        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK")
+        self._passthrough = None  # MAVPassthrough(loggername=f"{name}_MAVLINK")
 
     @property
     def is_connected(self) -> bool:
@@ -386,7 +389,10 @@ class DroneMAVSDK(Drone):
         assert scheme == "udp"
         self.drone_addr = f"{scheme}://{ip}:{port}"
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
-        mavsdk_passthrough_port = port + 1000
+        if self._passthrough:
+            mavsdk_passthrough_port = port + 1000
+        else:
+            mavsdk_passthrough_port = port
         mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
 
         if self.server_addr is None:
@@ -404,9 +410,10 @@ class DroneMAVSDK(Drone):
                                                               return_string=False)
 
         # Create passthrough
-        self.logger.debug(f"Connecting passthrough to drone @ {ip}:{port} and MAVSDK server @ {self.server_addr}:{mavsdk_passthrough_port}")
-        self._passthrough.connect_drone(f"{ip}:{port}")
-        self._passthrough.connect_gcs(f"{self.server_addr}:{mavsdk_passthrough_port}")
+        if self._passthrough:
+            self.logger.debug(f"Connecting passthrough to drone @ {ip}:{port} and MAVSDK server @ {self.server_addr}:{mavsdk_passthrough_port}")
+            self._passthrough.connect_drone(f"{ip}:{port}")
+            self._passthrough.connect_gcs(f"{self.server_addr}:{mavsdk_passthrough_port}")
         await self.system.connect(system_address=mavsdk_passthrough_string)
         async for state in self.system.core.connection_state():
             if state.is_connected:
@@ -732,7 +739,8 @@ class DroneMAVSDK(Drone):
         return True
 
     async def stop_execution(self):
-        await self._passthrough.stop()
+        if self._passthrough:
+            await self._passthrough.stop()
         self.system.__del__()
 
     async def stop(self):
