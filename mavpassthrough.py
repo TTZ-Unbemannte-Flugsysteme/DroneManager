@@ -21,7 +21,7 @@ class MAVPassthrough:
         self.source_system = 245
         self.source_component = 201
         self.con_drone_in: mavutil.mavudp | None = None
-        self.con_drone_out: mavutil.mavudp | None = None  # Note that this is only necessary on our real drones after start up
+        self.con_drone_out: mavutil.mavudp | None = None
         self.con_gcs: mavutil.mavudp | None = None
 
         self.logger = logging.getLogger(loggername)
@@ -42,26 +42,22 @@ class MAVPassthrough:
         self.con_gcs = mavutil.mavlink_connection("udpout:" + address,
                                                   source_system=self.source_system,
                                                   source_component=self.source_component, dialect=self.dialect)
-        # Send a single heartbeat
-        self.con_gcs.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
-
         self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
         self.running_tasks.add(asyncio.create_task(self._listen_gcs()))
 
     def connect_drone(self, ip, port):
-        self.logger.debug(f"Connecting to drone @{ip}:{port}")
         self.con_drone_out = mavutil.mavlink_connection(f"udp:{ip}:{port}",
                                                         input=False,
                                                         source_system=self.source_system,
                                                         source_component=self.source_component, dialect=self.dialect)
         self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
 
+        self.logger.debug(f"Connecting to drone @{ip}:{port}")
         self.con_drone_in = mavutil.mavlink_connection(f"udpin::{port}",
                                                        source_system=self.source_system,
                                                        source_component=self.source_component, dialect=self.dialect)
         self.running_tasks.add(asyncio.create_task(self._send_pings_drone()))
         self.running_tasks.add(asyncio.create_task(self._listen_drone()))
-
 
     async def _process_message_for_return(self, msg):
         msg_id = msg._header.msgId  # msg.id is sometimes not set correctly.
@@ -111,7 +107,7 @@ class MAVPassthrough:
                         await asyncio.sleep(0.0001)
                     else:
                         self.logger.debug(f"Message from Drone, {msg.to_dict()}")
-                        if self.con_gcs is not None and self.con_gcs.target_system != 0:    # Send onward to GCS
+                        if self.con_gcs is not None:    # Attribute errors seem to be caused by a mavlink version mismatch. How to figure out which version to use?
                             self.con_gcs.mav.srcSystem = msg.get_srcSystem()
                             self.con_gcs.mav.srcComponent = msg.get_srcComponent()
                             if await self._process_message_for_return(msg):
@@ -139,7 +135,15 @@ class MAVPassthrough:
         while not self.should_stop:
             self.logger.debug("Sending heartbeat to drone")
             self.con_drone_out.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
-            await asyncio.sleep(0.33)
+            await asyncio.sleep(0.5)
+
+    async def _send_heartbeats_gsc(self):
+        while not self.should_stop:
+            if self.con_gcs.target_system == 0:
+                self.logger.debug("Sending heartbeat to GCS")
+                self.con_gcs.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+                self.logger.debug(f"GCS connection target system {self.con_gcs.target_system}")
+            await asyncio.sleep(0.5)
 
     async def stop(self):
         self.logger.debug("Stopping")
