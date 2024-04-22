@@ -20,7 +20,8 @@ class MAVPassthrough:
         self.dialect = dialect
         self.source_system = 245
         self.source_component = 201
-        self.con_drone: mavutil.mavudp | None = None
+        self.con_drone_in: mavutil.mavudp | None = None
+        self.con_drone_out: mavutil.mavudp | None = None  # Note that this is only necessary on our real drones after start up
         self.con_gcs: mavutil.mavudp | None = None
 
         self.logger = logging.getLogger(loggername)
@@ -36,23 +37,31 @@ class MAVPassthrough:
 
         self.running_tasks = set()
         self.should_stop = False
-        self._schedule_background_tasks()
-
-    def _schedule_background_tasks(self):
-        self.running_tasks.add(asyncio.create_task(self._listen_gcs()))
-        self.running_tasks.add(asyncio.create_task(self._listen_drone()))
 
     def connect_gcs(self, address):
         self.con_gcs = mavutil.mavlink_connection("udpout:" + address,
                                                   source_system=self.source_system,
                                                   source_component=self.source_component, dialect=self.dialect)
-        self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
+        # Send a single heartbeat
+        self.con_gcs.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
-    def connect_drone(self, address):
-        self.con_drone = mavutil.mavlink_connection("udpin:" + address,
-                                                    source_system=self.source_system,
-                                                    source_component=self.source_component, dialect=self.dialect)
+        self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
+        self.running_tasks.add(asyncio.create_task(self._listen_gcs()))
+
+    def connect_drone(self, ip, port):
+        self.logger.debug(f"Connecting to drone @{ip}:{port}")
+        self.con_drone_out = mavutil.mavlink_connection(f"udp:{ip}:{port}",
+                                                        input=False,
+                                                        source_system=self.source_system,
+                                                        source_component=self.source_component, dialect=self.dialect)
+        self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
+
+        self.con_drone_in = mavutil.mavlink_connection(f"udpin::{port}",
+                                                       source_system=self.source_system,
+                                                       source_component=self.source_component, dialect=self.dialect)
         self.running_tasks.add(asyncio.create_task(self._send_pings_drone()))
+        self.running_tasks.add(asyncio.create_task(self._listen_drone()))
+
 
     async def _process_message_for_return(self, msg):
         msg_id = msg._header.msgId  # msg.id is sometimes not set correctly.
@@ -64,17 +73,13 @@ class MAVPassthrough:
                                 f"{msg.fieldnames}, {msg.fieldtypes}, {msg.orders}, {msg.lengths}, "
                                 f"{msg.array_lengths}, {msg.crc_extra}, {msg.unpacker}")
             return False
-#        try:
-#            if msg.target_system == self.source_system:  # Meant for our snooper, do not resend
-#                return False
-#        except AttributeError:      # Message has no target_system or target_component attributes and we resend
-#            pass
         msg_class = mavutil.mavlink.mavlink_map[msg_id]
         msg.__class__ = msg_class
         return True
         # maybe like this?: message_class(**msg.to_dict())
 
     async def _listen_gcs(self):
+        self.logger.debug("Starting to listen to GCS")
         while not self.should_stop:
             if self.con_gcs is not None:
                 while not self.should_stop:
@@ -84,53 +89,71 @@ class MAVPassthrough:
                         await asyncio.sleep(0.0001)
                     else:
                         self.logger.debug(f"Message from GCS, {msg.to_dict()}")
-                        if self.con_drone is not None:  # Send onward to the drone
-                            self.con_drone.mav.srcSystem = msg.get_srcSystem()
-                            self.con_drone.mav.srcComponent = msg.get_srcComponent()
+                        if self.con_drone_in is not None:  # Send onward to the drone
+                            self.con_drone_in.mav.srcSystem = msg.get_srcSystem()
+                            self.con_drone_in.mav.srcComponent = msg.get_srcComponent()
                             if await self._process_message_for_return(msg):
-                                self.con_drone.mav.send(msg)
+                                try:
+                                    self.con_drone_in.mav.send(msg)
+                                except Exception as e:
+                                    self.logger.debug(f"Encountered an exception sending message to drone: {repr(e)}", exc_info=True)
             else:
                 await asyncio.sleep(1)
 
     async def _listen_drone(self):
+        self.logger.debug("Starting to listen to drone")
         while not self.should_stop:
-            if self.con_drone is not None:
+            if self.con_drone_in is not None:
                 while not self.should_stop:
                     # Receive and log all messages from the GCS
-                    msg = self.con_drone.recv_match(blocking=False)
+                    msg = self.con_drone_in.recv_match(blocking=False)
                     if msg is None:
                         await asyncio.sleep(0.0001)
                     else:
                         self.logger.debug(f"Message from Drone, {msg.to_dict()}")
-                        if self.con_gcs is not None:    # Send onward to GCS
+                        if self.con_gcs is not None and self.con_gcs.target_system != 0:    # Send onward to GCS
                             self.con_gcs.mav.srcSystem = msg.get_srcSystem()
                             self.con_gcs.mav.srcComponent = msg.get_srcComponent()
                             if await self._process_message_for_return(msg):
-                                self.con_gcs.mav.send(msg)
+                                try:
+                                    self.con_gcs.mav.send(msg)
+                                except Exception as e:
+                                    self.logger.debug(f"Encountered an exception sending message to GCS: {repr(e)}",
+                                                      exc_info=True)
             else:
                 await asyncio.sleep(1)
 
     async def _send_pings_gcs(self):
         while not self.should_stop:
+            self.logger.debug("Pinging GCS")
             self.con_gcs.mav.ping_send(int(time.time() * 1e6), 0, 0, 0)
-            #self.con_gcs.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)  # Interferes with drone heartbeats
             await asyncio.sleep(1)
 
     async def _send_pings_drone(self):
         while not self.should_stop:
-            self.con_drone.mav.ping_send(int(time.time() * 1e6), 0, 0, 0)
-            self.con_drone.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+            self.logger.debug("Pinging drone")
+            self.con_drone_in.mav.ping_send(int(time.time() * 1e6), 0, 0, 0)
             await asyncio.sleep(1)
+
+    async def _send_heartbeats_drone(self):
+        while not self.should_stop:
+            self.logger.debug("Sending heartbeat to drone")
+            self.con_drone_out.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+            await asyncio.sleep(0.33)
 
     async def stop(self):
         self.logger.debug("Stopping")
         self.should_stop = True
+        if self.con_drone_in:
+            self.con_drone_in.close()
+        if self.con_gcs:
+            self.con_gcs.close()
 
 
 async def main():
     snoop = MAVPassthrough()
-    snoop.connect_drone("127.0.0.1:14540")
-    snoop.connect_gcs("127.0.0.1:15540")
+    snoop.connect_drone(ip="192.168.1.37", port=14567)
+    snoop.connect_gcs("127.0.0.1:15567")
     while True:
         await asyncio.sleep(1)
 

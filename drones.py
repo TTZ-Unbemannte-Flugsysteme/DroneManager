@@ -297,9 +297,11 @@ def parse_address(string=None, scheme=None, host=None, port=None, return_string=
     if scheme is None:
         scheme = "udp"
     if host is None:
-        host = "127.0.0.1"
+        host = ""
     elif host == "localhost":
-        host = "127.0.0.1"
+        host = ""
+    elif host == "127.0.0.1":
+        host = ""
     if port is None:
         port = 50051
     if return_string:
@@ -337,7 +339,7 @@ class DroneMAVSDK(Drone):
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
-        self._passthrough = None  # MAVPassthrough(loggername=f"{name}_MAVLINK")
+        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK")
 
     @property
     def is_connected(self) -> bool:
@@ -394,6 +396,7 @@ class DroneMAVSDK(Drone):
         else:
             mavsdk_passthrough_port = port
         mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
+        passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
 
         if self.server_addr is None:
             self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
@@ -408,13 +411,19 @@ class DroneMAVSDK(Drone):
                                                               host=self.server_addr,
                                                               port=self.server_port,
                                                               return_string=False)
-
+        await asyncio.sleep(0.5)
         # Create passthrough
         if self._passthrough:
-            self.logger.debug(f"Connecting passthrough to drone @ {ip}:{port} and MAVSDK server @ {self.server_addr}:{mavsdk_passthrough_port}")
-            self._passthrough.connect_drone(f"{ip}:{port}")
-            self._passthrough.connect_gcs(f"{self.server_addr}:{mavsdk_passthrough_port}")
+            self.logger.debug(
+                f"Connecting passthrough to drone @{ip}:{port} and MAVSDK server @ {passthrough_gcs_string}")
+            self._passthrough.connect_drone(ip, port)
+            self._passthrough.connect_gcs(passthrough_gcs_string)
+
+        await asyncio.sleep(0.5)
+
         await self.system.connect(system_address=mavsdk_passthrough_string)
+        await asyncio.sleep(0.5) # Try and wait for mavsdk server to go
+
         async for state in self.system.core.connection_state():
             if state.is_connected:
                 await self._configure_message_rates()
@@ -696,7 +705,7 @@ class DroneMAVSDK(Drone):
         await super().land()
         await self._land_using_offbord_mode()
 
-    async def _land_using_offbord_mode(self, error_thresh=0.003, min_time=0.5):
+    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=0.5):
         self.logger.info("Landing!")
         ema_alt_error = 0
         going_down = True
@@ -723,7 +732,6 @@ class DroneMAVSDK(Drone):
             await self._set_setpoint_ned(target_pos)
             await asyncio.sleep(1/self._position_update_freq)
         self.logger.info("Landed!")
-        await self.disarm()
 
     async def _land_using_landmode(self):
         result = await self._action_error_wrapper(self.system.action.land)
@@ -741,6 +749,7 @@ class DroneMAVSDK(Drone):
     async def stop_execution(self):
         if self._passthrough:
             await self._passthrough.stop()
+            del self._passthrough
         self.system.__del__()
 
     async def stop(self):

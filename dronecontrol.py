@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import os
 import socket
-from asyncio.exceptions import TimeoutError
+from asyncio.exceptions import TimeoutError, CancelledError
 import argparse
 import shlex
 from typing import Dict
@@ -27,9 +27,10 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 
 DRONE_DICT = {
     "luke":   "udp://:14561",
+    "tycho":  "udp://:14564",
     "gavin":  "udp://:14565",
     "corran": "udp://:14566",
-    "jaina":  "udp://:14567"
+    "jaina":  "udp://192.168.1.37:14567"
 }
 
 
@@ -288,13 +289,19 @@ class CommandScreen(Screen):
                 drone = self._drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
                 try:
                     connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
+                except (TimeoutError, CancelledError):
+                    self.logger.warning(f"Connection attempts to {name} timed out!")
+                    await self._remove_drone_object(name, drone)
+                    return False
                 except (OSError, socket.gaierror) as e:
                     self.logger.info(f"Address error, probably due to invalid address")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 except AssertionError as e:
                     self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 if connected:
                     self.logger.info(f"Connected to {name}!")
@@ -316,7 +323,7 @@ class CommandScreen(Screen):
                     self.logger.warning(f"Failed to connect to drone {name}!")
                     await self._remove_drone_object(name, drone)
                     return False
-            except TimeoutError:
+            except (TimeoutError, CancelledError):
                 self.logger.warning(f"Connection attempts to {name} timed out!")
                 await self._remove_drone_object(name, drone)
                 return False
@@ -406,10 +413,13 @@ class CommandScreen(Screen):
             self.logger.debug(f"Don't have a drone with name {name}")
 
     async def _kill_drone(self, name):
-        drone = self.drones[name]
-        result = await drone.kill()
-        await self._remove_drone_object(name, drone)
-        return result
+        try:
+            drone = self.drones[name]
+            result = await drone.kill()
+            await self._remove_drone_object(name, drone)
+            return result
+        except KeyError:
+            self.logger.debug(f"Don't have a drone with name {name}")
 
     async def _remove_drone_object(self, name, drone: Drone):
         try:
@@ -422,7 +432,6 @@ class CommandScreen(Screen):
         except Exception:
             pass
         try:
-            await drone.stop_execution()
             drone.should_stop.set()
             del drone
         except Exception as e:
