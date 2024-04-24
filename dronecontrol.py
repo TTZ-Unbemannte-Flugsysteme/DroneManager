@@ -10,10 +10,10 @@ import numpy as np
 import random
 
 import textual.css.query
-from textual import on
+from textual import on, events
 from textual.app import App, Screen, Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Log, Static
+from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, ProgressBar
 from textual.widget import Widget
 
 from widgets import InputWithHistory, TextualLogHandler, DroneOverview
@@ -27,48 +27,103 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 
 DRONE_DICT = {
     "luke":   "udp://192.168.1.31:14561",
-    "tycho":  "udp://:14564",
-    "gavin":  "udp://:14565",
-    "corran": "udp://:14566",
+    "wedge":  "udp://192.168.1.32:14562",
+    "derek":  "udp://192.168.1.33:14563",
+    "tycho":  "udp://192.168.1.34:14564",
+    "gavin":  "udp://192.168.1.35:14565",
+    "corran": "udp://192.168.1.36:14566",
     "jaina":  "udp://192.168.1.37:14567"
 }
+
+UPDATE_RATE = 20  # How often the various screens update in Hz
 
 
 class StatusScreen(Screen):
 
-    BINDINGS = {
-        Binding("a", "app.cycle_drones_down", "Cycle Drone <-"),
-        Binding("d", "app.cycle_drones_up", "Cycle Drone ->"),
-    }
+    CSS = """
+ProgressBar {
+    width: 25;
+    height: 1;
+    layout: horizontal;
+}
 
-    def __init__(self, drone, logger, *args, **kwargs):
+Bar {
+    width: 20;
+    height: 1;
+}
+"""
+
+    def __init__(self, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.drone = drone
+        self.drones = {}
+        self.cur_drone = None
         self.logger = logger
         asyncio.create_task(self._update_values())
 
     async def _update_values(self):
         while True:
             try:
-                self.query_one("#name", expect_type=Static).update(f"{self.drone.name}")
-                self.query_one("#address", expect_type=Static).update(f"{self.drone.drone_addr}")
-                self.query_one("#attitude", expect_type=Static).update(f"{self.drone.attitude}")
-                self.query_one("#batteries", expect_type=Static).update(f"{self.drone.batteries}")
+                if self.cur_drone is not None:
+                    self.query_one("#name", expect_type=Static).update(f"{self.cur_drone.name}")
+                    self.query_one("#address", expect_type=Static).update(f"{self.cur_drone.drone_addr}")
+                    self.query_one("#attitude", expect_type=Static).update(f"{self.cur_drone.attitude}")
+                    self.query_one("#battery", expect_type=ProgressBar).update(progress=self.cur_drone.batteries[0].remaining)
+                else:
+                    self.query_one("#name", expect_type=Static).update("NAME: NO DRONE SELECTED")
+                    self.query_one("#address", expect_type=Static).update("ADDRESS: NO DRONE SELECTED")
+                    self.query_one("#attitude", expect_type=Static).update("ATTITUDE: NO DRONE SELECTED")
+                    self.query_one("#battery", expect_type=ProgressBar).update(progress=0)
             except textual.app.NoMatches:
                 pass
-            await asyncio.sleep(1/20)
+            except Exception as e:
+                self.logger.error(f"Error updating values: {repr(e)}", exc_info=True)
+            await asyncio.sleep(1/UPDATE_RATE)
 
     def compose(self):
-        yield Static(f"{self.drone.name}", id="name")
-        yield Static(f"{self.drone.drone_addr}", id="address")
-        yield Static(f"{self.drone.attitude}", id="attitude")
-        yield Static(f"{str(self.drone.batteries)}", id="batteries")
+        with Horizontal():
+            with RadioSet(id="droneselector"):
+                yield RadioButton("None", id="button_no_drone")
+            with Vertical():
+                yield Static(id="name", renderable="NAME: NO DRONE SELECTED")
+                yield Static(id="address", renderable="ADDRESS: NO DRONE SELECTED")
+                yield ProgressBar(id="battery", total=100, show_eta=False)
+                yield Static(id="attitude", renderable="ATTITUDE: NO DRONE SELECTED")
         yield Footer()
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.pressed.label.plain == "None":
+            self.cur_drone = None
+        else:
+            self.cur_drone = self.drones[event.pressed.label.plain]
+
+    async def add_drone(self, name, drone):
+        try:
+            self.drones[name] = drone
+            self.logger.debug(f"Adding radio button for {name}")
+            radio_selector = RadioButton(f"{name}", id=f"button_{name}")
+            radio_field = self.query_one("#droneselector", expect_type=RadioSet)
+            await radio_field.mount(radio_selector)
+        except Exception as e:
+            self.logger.error(f"{repr(e)}", exc_info=True)
+
+    async def remove_drone(self, name):
+        try:
+            if self.cur_drone == name:
+                # Have to change current drone to prevent stuff breaking
+                self.cur_drone = None
+            self.drones.pop(name)
+            self.logger.debug(f"Removing radio button for {name}")
+            await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
+            # Move currently selected button after removal to prevent index errors
+            selector = self.query_one(f"#droneselector", expect_type=RadioSet)
+            selector.action_next_button()
+        except Exception as e:
+            self.logger.error(f"{repr(e)}", exc_info=True)
+            raise
 
 
 class CommandScreen(Screen):
-    # TODO: Status pane for each drone with much info: positions, velocity, attitude, gps info, battery, "health"
-    #  checks, check what else
+    # TODO: Remove drone handling functions and put them into a DroneManager class that the app interacts with.
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
@@ -90,7 +145,7 @@ class CommandScreen(Screen):
 }
 
 #sidebar {
-    width: 100;
+    width: 87;
 }
 """
 
@@ -306,18 +361,7 @@ class CommandScreen(Screen):
                 if connected:
                     self.logger.info(f"Connected to {name}!")
                     self.drones[name] = drone
-                    output = self.query_one("#output", expect_type=Log)
-                    status_field = self.query_one("#status", expect_type=VerticalScroll)
-                    self.logger.debug(f"Adding log pane handlers to {name}")
-                    drone_handler = TextualLogHandler(output)
-                    drone_handler.setLevel(logging.INFO)
-                    drone_handler.setFormatter(common_formatter)
-                    drone.add_handler(drone_handler)
-                    self.app.add_status_screen(drone, name)
-                    self.logger.debug(f"Adding overview widget for {name}")
-                    drone_status_widget = DroneOverview(drone)
-                    self.drone_widgets[name] = drone_status_widget
-                    await status_field.mount(drone_status_widget)
+                    await self._add_drone_object(name, drone)
                     return True
                 else:
                     self.logger.warning(f"Failed to connect to drone {name}!")
@@ -327,6 +371,20 @@ class CommandScreen(Screen):
                 self.logger.warning(f"Connection attempts to {name} timed out!")
                 await self._remove_drone_object(name, drone)
                 return False
+
+    async def _add_drone_object(self, name, drone):
+        output = self.query_one("#output", expect_type=Log)
+        status_field = self.query_one("#status", expect_type=VerticalScroll)
+        self.logger.debug(f"Adding log pane handlers to {name}")
+        drone_handler = TextualLogHandler(output)
+        drone_handler.setLevel(logging.INFO)
+        drone_handler.setFormatter(common_formatter)
+        drone.add_handler(drone_handler)
+        await self.app.status_screen.add_drone(name, drone)
+        self.logger.debug(f"Adding overview widget for {name}")
+        drone_status_widget = DroneOverview(drone, UPDATE_RATE)
+        self.drone_widgets[name] = drone_status_widget
+        await status_field.mount(drone_status_widget)
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         self.logger.info(start_string.format(names))
@@ -427,7 +485,7 @@ class CommandScreen(Screen):
         except KeyError:
             pass
         try:
-            self.app.remove_status_screen(name)
+            await self.app.status_screen.remove_drone(name)
             await self.drone_widgets[name].remove()
         except Exception:
             pass
@@ -484,13 +542,17 @@ class CommandScreen(Screen):
         handler.setFormatter(common_formatter)
         self.logger.addHandler(handler)
 
+    def _on_mount(self, event: events.Mount) -> None:
+        super()._on_mount(event)
+        self.query_one("#output", expect_type=Log).can_focus = False
+
     def compose(self):
 
         status_string = ""
         status_string += "Drone Status\n"
-        format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>10}   {:>6}   {:>6}   {:>8}"
-        status_string += format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode", "GPS",
-                                                     "NED", "Vel", "Y/Alt/PE")
+        format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>6}   {:>6}   {:>5}"
+        status_string += format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode",
+                                                     "NED", "Vel", "Yaw")
 
         yield Header()
         yield Vertical(
@@ -518,8 +580,6 @@ class DroneManager(App):
 
     def __init__(self, drone_class):
         self._drone_class = drone_class
-        self.status_screens = []
-        self.status_index = 0
         self.logger = logging.getLogger("DroneControl")
         self.logger.setLevel(logging.DEBUG)
 
@@ -531,54 +591,48 @@ class DroneManager(App):
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(common_formatter)
         self.logger.addHandler(file_handler)
+        self.command_screen: CommandScreen | None = None
+        self.status_screen: StatusScreen | None = None
         super().__init__()
 
     def on_mount(self):
         screen = CommandScreen(self._drone_class, logger=self.logger, name="control-screen")
         self.install_screen(screen, name=screen.name)
         self.add_mode("control", base_screen=screen)
+        self.command_screen = screen
+        status_screen = StatusScreen(logger=self.logger, name="status-screen")
+        self.install_screen(status_screen, name=status_screen.name)
+        self.add_mode("status", base_screen=status_screen)
+        self.status_screen = status_screen
+        self.switch_mode("status")
         self.switch_mode("control")
-
-    def add_status_screen(self, drone, name):
-        self.logger.debug(f"Adding a new status screen {name}")
-        screen = StatusScreen(drone, logger=self.logger, name=name)
-        self.install_screen(screen, name=screen.name)
-        self.add_mode(name, base_screen=screen)
-        self.status_screens.append(name)
-
-    def remove_status_screen(self, name):
-        self.logger.debug(f"Removing status screen {name}")
-        self.remove_mode(name)
-        self.uninstall_screen(name)
-        if name in self.status_screens:
-            self.status_screens.remove(name)
 
     def action_cycle_control(self):
         self.logger.debug("Switching between control and status screens")
-        if self.current_mode == "control" and self.status_screens:
-            self.logger.debug(f"Switching from control to status. Current status index {self.status_index}. Current screens ")
-            self.switch_mode(self.status_screens[self.status_index])
+        if self.current_mode == "control":
+            self.logger.debug(f"Switching from control to status.")
+            self.switch_mode("status")
         elif self.current_mode != "control":
             self.logger.debug("Switching to control")
             self.switch_mode("control")
         else:
             self.logger.debug("No valid target for switching")
 
-    def action_cycle_drones_up(self):
-        self.logger.debug(f"Cycling status screens up. Current Screens {self.status_screens}.")
-        target_index = (self.status_index + 1) % len(self.status_screens)
-        self.logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
-        self.logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
-        self.status_index = target_index
-        self.switch_mode(self.status_screens[target_index])
+    #def action_cycle_drones_up(self):
+    #    self.logger.debug(f"Cycling status screens up. Current Screens {self.status_screens}.")
+    #    target_index = (self.status_index + 1) % len(self.status_screens)
+    #    self.logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
+    #    self.logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
+    #    self.status_index = target_index
+    #    self.switch_mode(self.status_screens[target_index])
 
-    def action_cycle_drones_down(self):
-        self.logger.debug(f"Cycling status screens down. Current Screens {self.status_screens}.")
-        target_index = (self.status_index - 1) % len(self.status_screens)
-        self.logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
-        self.logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
-        self.status_index = target_index
-        self.switch_mode(self.status_screens[target_index])
+    #def action_cycle_drones_down(self):
+    #    self.logger.debug(f"Cycling status screens down. Current Screens {self.status_screens}.")
+    #    target_index = (self.status_index - 1) % len(self.status_screens)
+    #    self.logger.debug(f"Swapping to index {target_index}, current index {self.status_index}")
+    #    self.logger.debug(f"Index belongs to mode {self.status_screens[target_index]}")
+    #    self.status_index = target_index
+    #    self.switch_mode(self.status_screens[target_index])
 
 
 if __name__ == "__main__":
