@@ -26,7 +26,7 @@ import logging
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
-    "luke":   "udp://:14561",
+    "luke":   "udp://192.168.1.31:14561",
     "tycho":  "udp://:14564",
     "gavin":  "udp://:14565",
     "corran": "udp://:14566",

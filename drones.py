@@ -428,7 +428,7 @@ class DroneMAVSDK(Drone):
                 self._passthrough.connect_gcs(passthrough_gcs_string)
 
                 while not self._passthrough.connected_to_drone() or not self._passthrough.connected_to_gcs():
-                    self.logger.debug(f"Waiting on passthrough to connect")
+                    self.logger.debug(f"Waiting on passthrough to connect. Drone: {self._passthrough.connected_to_drone()}, GCS: {self._passthrough.connected_to_gcs()}")
                     await asyncio.sleep(0.1)
                 self.logger.debug("Connected passthrough!")
 
