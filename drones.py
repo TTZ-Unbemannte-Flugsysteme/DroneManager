@@ -34,9 +34,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
-# TODO: Fix passthrough so it works with real drones, look into pymavlink on windows maybe? OSError Invalid arugment
-#  UDP_MAX_PACKET_LEN
-# TODO: Exception catching on the passthrough
+# TODO: Connected attribute does not work with passthrough, fix that
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: Fix the dummy drone so it actually works again
@@ -421,8 +419,6 @@ class DroneMAVSDK(Drone):
                                                                   return_string=False)
             connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
-
-
             # Create passthrough
             if self._passthrough:
                 await asyncio.sleep(0.5)  # Wait to try and make sure that the mavsdk server has started before booting up passthrough
@@ -431,16 +427,18 @@ class DroneMAVSDK(Drone):
                 self._passthrough.connect_drone(ip, port)
                 self._passthrough.connect_gcs(passthrough_gcs_string)
 
+                while not self._passthrough.connected_to_drone() or not self._passthrough.connected_to_gcs():
+                    self.logger.debug(f"Waiting on passthrough to connect")
+                    await asyncio.sleep(0.1)
+                self.logger.debug("Connected passthrough!")
+
             await connected
-            if self._passthrough:
-                # connected only means that mavsdk connected to the passthrough, have to be check that passthrough
-                # is connected to drone
-                pass
 
             async for state in self.system.core.connection_state():
                 if state.is_connected:
                     await self._configure_message_rates()
                     await self._schedule_update_tasks()
+                    self.logger.debug("Connected!")
                     return True
         except Exception as e:
             self.logger.debug(f"Exception during connection: {repr(e)}", exc_info=True)
@@ -459,13 +457,19 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._status_check()))
 
     async def _configure_message_rates(self) -> None:
-        await self.system.telemetry.set_rate_position(20)
-        await self.system.telemetry.set_rate_position_velocity_ned(20)
-        await self.system.telemetry.set_rate_attitude_euler(20)
+        await self.system.telemetry.set_rate_position(self._position_update_freq)
+        await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
+        await self.system.telemetry.set_rate_attitude_euler(self._position_update_freq)
+        await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
 
     async def _connect_check(self):
-        async for state in self.system.core.connection_state():
-            self._is_connected = state.is_connected
+        if self._passthrough:
+            while True:
+                self._is_connected = self._passthrough.connected_to_drone() and self._passthrough.connected_to_gcs()
+                await asyncio.sleep(1/self._position_update_freq)
+        else:
+            async for state in self.system.core.connection_state():
+                self._is_connected = state.is_connected
 
     async def _arm_check(self):
         async for arm in self.system.telemetry.armed():
@@ -720,7 +724,7 @@ class DroneMAVSDK(Drone):
         await super().land()
         await self._land_using_offbord_mode()
 
-    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=0.5):
+    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=1):
         self.logger.info("Landing!")
         ema_alt_error = 0
         going_down = True
@@ -731,6 +735,7 @@ class DroneMAVSDK(Drone):
         await self._set_setpoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
+        # TODO: Get the altitude update rate from the drone and adjust error checking frequency to that
         while going_down:
             cur_pos = self.position_ned
             ema_alt_error = dist_ned(cur_pos, old_pos) + 0.33 * ema_alt_error
@@ -747,6 +752,7 @@ class DroneMAVSDK(Drone):
             await self._set_setpoint_ned(target_pos)
             await asyncio.sleep(1/self._position_update_freq)
         self.logger.info("Landed!")
+        return True
 
     async def _land_using_landmode(self):
         result = await self._action_error_wrapper(self.system.action.land)
