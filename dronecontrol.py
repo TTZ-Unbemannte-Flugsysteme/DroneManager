@@ -433,6 +433,7 @@ class CommandScreen(Screen):
             pass
         try:
             drone.should_stop.set()
+            drone.__del__()
             del drone
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)

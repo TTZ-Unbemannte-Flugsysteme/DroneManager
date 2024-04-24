@@ -95,6 +95,9 @@ class Drone(ABC, threading.Thread):
         while not self.should_stop:
             pass
 
+    def __del__(self):
+        self.stop_execution()
+
     async def _task_scheduler(self):
         # TODO: Have a think about error behaviour
         while True:
@@ -341,6 +344,10 @@ class DroneMAVSDK(Drone):
         self._max_position_discontinuity = - math.inf
         self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK")
 
+    def __del__(self):
+        self.system.__del__()
+        super().__del__()
+
     @property
     def is_connected(self) -> bool:
         return self._is_connected
@@ -398,37 +405,45 @@ class DroneMAVSDK(Drone):
         mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
         passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
 
-        if self.server_addr is None:
-            self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
-                              f"connection {mavsdk_passthrough_string}")
-        if self.server_addr is None and platform.system() == "Windows":
-            self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {mavsdk_passthrough_string}",
-                                         stdout=DEVNULL, stderr=DEVNULL)
-            self.server_addr = "127.0.0.1"
-        self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
+        try:
+            if self.server_addr is None:
+                self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
+                                  f"connection {mavsdk_passthrough_string}")
+            if self.server_addr is None and platform.system() == "Windows":
+                self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {mavsdk_passthrough_string}",
+                                             stdout=DEVNULL, stderr=DEVNULL)
+                self.server_addr = "127.0.0.1"
+            self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
 
-        _, self.server_addr, self.server_port = parse_address(scheme="udp",
-                                                              host=self.server_addr,
-                                                              port=self.server_port,
-                                                              return_string=False)
-        await asyncio.sleep(0.5)
-        # Create passthrough
-        if self._passthrough:
-            self.logger.debug(
-                f"Connecting passthrough to drone @{ip}:{port} and MAVSDK server @ {passthrough_gcs_string}")
-            self._passthrough.connect_drone(ip, port)
-            self._passthrough.connect_gcs(passthrough_gcs_string)
+            _, self.server_addr, self.server_port = parse_address(scheme="udp",
+                                                                  host=self.server_addr,
+                                                                  port=self.server_port,
+                                                                  return_string=False)
+            connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
-        await asyncio.sleep(0.5)
 
-        await self.system.connect(system_address=mavsdk_passthrough_string)
-        await asyncio.sleep(0.5) # Try and wait for mavsdk server to go
 
-        async for state in self.system.core.connection_state():
-            if state.is_connected:
-                await self._configure_message_rates()
-                await self._schedule_update_tasks()
-                return True
+            # Create passthrough
+            if self._passthrough:
+                await asyncio.sleep(0.5)  # Wait to try and make sure that the mavsdk server has started before booting up passthrough
+                self.logger.debug(
+                    f"Connecting passthrough to drone @{ip}:{port} and MAVSDK server @ {passthrough_gcs_string}")
+                self._passthrough.connect_drone(ip, port)
+                self._passthrough.connect_gcs(passthrough_gcs_string)
+
+            await connected
+            if self._passthrough:
+                # connected only means that mavsdk connected to the passthrough, have to be check that passthrough
+                # is connected to drone
+                pass
+
+            async for state in self.system.core.connection_state():
+                if state.is_connected:
+                    await self._configure_message_rates()
+                    await self._schedule_update_tasks()
+                    return True
+        except Exception as e:
+            self.logger.debug(f"Exception during connection: {repr(e)}", exc_info=True)
         return False
 
     async def _schedule_update_tasks(self) -> None:
