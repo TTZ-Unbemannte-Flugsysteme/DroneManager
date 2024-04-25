@@ -122,8 +122,7 @@ Bar {
             selector = self.query_one(f"#droneselector", expect_type=RadioSet)
             selector.action_next_button()
         except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
-            raise
+            self.logger.debug(f"{repr(e)}", exc_info=True)
 
 
 class CommandScreen(Screen):
@@ -250,6 +249,9 @@ class CommandScreen(Screen):
                                                          "drones are listed, kills all of them.")
         kill_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to kill.")
 
+        test_parser = subparsers.add_parser("test", help="Executes whatever the test function does for a drone")
+        test_parser.add_argument("drones", type=str, help="Drone to test.")
+
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
         value = message.value
@@ -299,6 +301,8 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.resume(args.drones))
             elif args.command == "stop":
                 tmp = asyncio.create_task(self.action_stop(args.drones))
+            elif args.command == "test":
+                tmp = asyncio.create_task(self.test(args.drones))
             elif args.command == "kill":
                 if not args.drones:
                     if self._kill_counter:
@@ -438,17 +442,75 @@ class CommandScreen(Screen):
         for name in names:
             self.drones[name].resume()
 
-    async def fly_to(self, name, x, y, z, yaw, tol=0.5):
+    async def fly_to(self, name, x, y, z, yaw, tol=0.5, schedule=True):
         point = np.array([x, y, z, yaw])
         self.logger.info(f"Queueing move to {point} for {name}.")
         try:
             coro = self.drones[name].fly_to_point(point, tolerance=tol)
-            result = self.drones[name].schedule_task(coro)
+            if schedule:
+                result = self.drones[name].schedule_task(coro)
+            else:
+                result = self.drones[name].execute_task(coro)
             await result
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
         except Exception as e:
             self.logger.error(repr(e))
+
+    async def test(self, name):
+        try:
+            drone = self.drones[name]
+        except KeyError:
+            self.logger.warning(f"No drone named {name}!")
+            return
+        altitude = 2.0
+        try:
+            tmp = asyncio.create_task(self.arm([name]))
+            await asyncio.sleep(2)
+            tmp = asyncio.create_task(self.takeoff([name]))
+            await asyncio.sleep(6)
+            self.logger.info("Step wise move")
+            await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(2)
+            await drone._set_setpoint_ned(np.asarray([1, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(2)
+            await drone._set_setpoint_ned(np.asarray([2, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(2)
+            await drone._set_setpoint_ned(np.asarray([3, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(3)
+            await drone._set_setpoint_ned(np.asarray([2, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(2)
+            await drone._set_setpoint_ned(np.asarray([1, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(2)
+            await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(5)
+        ############
+            self.logger.info("Big move")
+            await drone._set_setpoint_ned(np.asarray([3, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(5)
+            await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 0], dtype=float))
+            await asyncio.sleep(7)
+        #############
+            #self.logger.info("Turning, rate 10deg/2, 2Hz")
+            #for i in range(72):
+            #    await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 5*(i+1)], dtype=float))
+            #    await asyncio.sleep(0.5)
+            #await asyncio.sleep(3)
+            #self.logger.info("Turning, rate 10deg/2, 4Hz")
+            #for i in range(144):
+            #    await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 2.5*(i+1)], dtype=float))
+            #    await asyncio.sleep(0.25)
+            #await asyncio.sleep(3)
+            #self.logger.info("Turning, rate 10deg/2, 10Hz")
+            #for i in range(360):
+            #    await drone._set_setpoint_ned(np.asarray([0, 0, -altitude, 1.*(i+1)], dtype=float))
+            #    await asyncio.sleep(0.1)
+            #await asyncio.sleep(10)
+        #############
+            tmp = asyncio.create_task(self.land([name]))
+            await asyncio.sleep(5)
+        except Exception as e:
+            self.logger.error(f"{repr(e)}", exc_info=True)
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
         self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
