@@ -13,5 +13,7 @@ class ArgParser(argparse.ArgumentParser):
             raise ValueError(message)
         elif "unrecognized argument" in message:
             raise ValueError(message)
+        elif "invalid" in message:  # Likely an invalid argument, i.e. a string instead of float
+            raise ValueError(message)
         else:
             raise ArgumentParserError(message)

@@ -532,13 +532,13 @@ class DroneMAVSDK(Drone):
     async def _status_check(self):
         async for message in self.system.telemetry.status_text():
             if message.type is StatusTextType.DEBUG:
-                self.logger.debug(message.text)
+                self.logger.debug(f"{message.text}")
             elif message.type in [StatusTextType.INFO, StatusTextType.NOTICE]:
-                self.logger.info(message.text)
+                self.logger.info(f"{message.text}")
             elif message.type is StatusTextType.WARNING:
-                self.logger.warning(message.text)
+                self.logger.warning(f"{message.text}")
             else:
-                self.logger.error(message.text)
+                self.logger.error(f"{message.text}")
 
     async def arm(self):
         self.logger.info("Arming!")

@@ -18,12 +18,13 @@ from textual.widget import Widget
 
 from widgets import InputWithHistory, TextualLogHandler, DroneOverview
 from drones import Drone, DroneMAVSDK, DummyMAVDrone, parse_address
-from betterparser import ArgParser
+from betterparser import ArgParser, ArgumentParserError
 
 import logging
 
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
     "luke":   "udp://192.168.1.31:14561",
@@ -111,7 +112,10 @@ Bar {
             if self.cur_drone == name:
                 # Have to change current drone to prevent stuff breaking
                 self.cur_drone = None
-            self.drones.pop(name)
+            try:
+                self.drones.pop(name)
+            except KeyError:
+                pass
             self.logger.debug(f"Removing radio button for {name}")
             await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
             # Move currently selected button after removal to prevent index errors
@@ -125,6 +129,7 @@ Bar {
 class CommandScreen(Screen):
     # TODO: Remove drone handling functions and put them into a DroneManager class that the app interacts with.
     # TODO: Figure out how to get voxl values from the drone
+    # TODO: Make the CSS better, change widths and whatever dynamically
     # TODO: Handle MAVSDK crashes
     # TODO: Print a pretty usage/command overview thing somewhere.
 
@@ -145,7 +150,7 @@ class CommandScreen(Screen):
 }
 
 #sidebar {
-    width: 87;
+    width: 92;
 }
 """
 
@@ -254,6 +259,9 @@ class CommandScreen(Screen):
             args = self.parser.parse_args(shlex.split(value))
         except ValueError as e:
             self.logger.warning(str(e))
+            return
+        except ArgumentParserError as e:
+            self.logger.error(f"Exception parsing the argument: {repr(e)}", exc_info=True)
             return
         try:
             if args.command != "kill" or args.drones:
@@ -378,7 +386,7 @@ class CommandScreen(Screen):
         self.logger.debug(f"Adding log pane handlers to {name}")
         drone_handler = TextualLogHandler(output)
         drone_handler.setLevel(logging.INFO)
-        drone_handler.setFormatter(common_formatter)
+        drone_handler.setFormatter(pane_formatter)
         drone.add_handler(drone_handler)
         await self.app.status_screen.add_drone(name, drone)
         self.logger.debug(f"Adding overview widget for {name}")
@@ -539,7 +547,7 @@ class CommandScreen(Screen):
                 await asyncio.sleep(0.1)
         handler = TextualLogHandler(output)
         handler.setLevel(logging.INFO)
-        handler.setFormatter(common_formatter)
+        handler.setFormatter(pane_formatter)
         self.logger.addHandler(handler)
 
     def _on_mount(self, event: events.Mount) -> None:
@@ -549,10 +557,7 @@ class CommandScreen(Screen):
     def compose(self):
 
         status_string = ""
-        status_string += "Drone Status\n"
-        format_string_header = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>6}   {:>6}   {:>5}"
-        status_string += format_string_header.format("Name", "Connected", "Armed", "In-Air", "FlightMode",
-                                                     "NED", "Vel", "Yaw")
+        status_string += "Drone Status\n" + DroneOverview.header_string()
 
         yield Header()
         yield Vertical(

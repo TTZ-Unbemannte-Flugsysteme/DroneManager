@@ -1,4 +1,5 @@
 import asyncio
+import math
 
 from textual.widgets import Input, Log, Static
 from mavsdk.telemetry import FlightMode
@@ -76,34 +77,66 @@ class InputWithHistory(Input):
 
 class DroneOverview(Static):
 
+    COLUMN_NAMES = ["Name", "Connected", "Armed", "In-Air", "FlightMode", "Local", "Vel", "Yaw/Bat"]
+    COLUMN_WIDTHS = [10, 9, 5, 6, 11, 9, 9, 8]
+    COLUMN_ALIGN = ["<", ">", ">", ">", ">", ">", ">", ">"]
+    COLUMN_SPACING = 3
+
     def __init__(self, drone, update_frequency, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.drone = drone
         self.update_frequency = update_frequency
         self.logger = self.app.logger
+        self.format_string = (" "*self.COLUMN_SPACING).join([f"{{:{self.COLUMN_ALIGN[i]}{self.COLUMN_WIDTHS[i]}}}"
+                                                             for i
+                                                             in range(len(self.COLUMN_NAMES))])
+
+    @classmethod
+    def header_string(cls):
+        return (" "*cls.COLUMN_SPACING).join([f"{cls.COLUMN_NAMES[i]:{cls.COLUMN_ALIGN[i]}{cls.COLUMN_WIDTHS[i]}}" for i in range(len(cls.COLUMN_NAMES))])
+
+    @classmethod
+    def gagdet_width(cls):
+        return (len(cls.COLUMN_NAMES)-1)*cls.COLUMN_SPACING + sum(cls.COLUMN_WIDTHS)
 
     def on_mount(self) -> None:
         asyncio.create_task(self.update_display())
 
     async def update_display(self):
         while True:
-            if self.drone.flightmode == FlightMode.OFFBOARD:
-                color = "green"
-            else:
-                color = "red"
-            format_string = "{:<10}   {:>9}   {:>5}   {:>6}   {:>11}   {:>6.3f}   {:>6.3f}   {:>4.1f}"
-            output = ""
-            output += format_string.format("", "", "", "", "",
-                                           self.drone.position_ned[0], self.drone.velocity[0],
-                                           0) + "\n"
-            output += format_string.format(self.drone.name, str(self.drone.is_connected), str(self.drone.is_armed),
-                                           str(self.drone.in_air), str(self.drone.flightmode),
-                                           self.drone.position_ned[1], self.drone.velocity[1],
-                                           self.drone.attitude[2]) + "\n"
-            output += format_string.format("", "", "", "", "", self.drone.position_ned[2],
-                                           self.drone.velocity[2], 0) + "\n"
-            self.update(Text(output, style=f"bold {color}"))
-            await asyncio.sleep(1/self.update_frequency)
+            try:
+                if self.drone.flightmode == FlightMode.OFFBOARD:
+                    color = "green"
+                else:
+                    color = "red"
+                battery_remaining = math.nan
+                battery_voltage = math.nan
+                try:
+                    battery_remaining = self.drone.batteries[0].remaining
+                    battery_voltage = self.drone.batteries[0].voltage
+                except KeyError:
+                    pass
+                output = ""
+                output += self.format_string.format("", "", "", "", "",
+                                                    f"F: {self.drone.position_ned[0]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"F: {self.drone.velocity[0]:{self.COLUMN_WIDTHS[6]-3}.3f}",
+                                                    f"Y: {self.drone.attitude[2]:{self.COLUMN_WIDTHS[7]-3}.1f}") + "\n"
+                output += self.format_string.format(self.drone.name,
+                                                    str(self.drone.is_connected),
+                                                    str(self.drone.is_armed),
+                                                    str(self.drone.in_air),
+                                                    str(self.drone.flightmode),
+                                                    f"R: {self.drone.position_ned[1]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"R: {self.drone.velocity[1]:{self.COLUMN_WIDTHS[6]-3}.3f}",
+                                                    f"{battery_remaining:{self.COLUMN_WIDTHS[7]-1}.0f}%") + "\n"
+                output += self.format_string.format("", "", "", "", "",
+                                                    f"D: {self.drone.position_ned[2]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"D: {self.drone.velocity[2]:{self.COLUMN_WIDTHS[6]-3}.3f}",
+                                                    f"{battery_voltage:{self.COLUMN_WIDTHS[7]-1}.2f}V") + "\n"
+                self.update(Text(output, style=f"bold {color}"))
+            except Exception as e:
+                self.logger.debug(f"Exception updating status pane for drone {self.drone.name}: {repr(e)}", exc_info=True)
+            await asyncio.sleep(1 / self.update_frequency)
 
 
 class TextualLogHandler(logging.Handler):
