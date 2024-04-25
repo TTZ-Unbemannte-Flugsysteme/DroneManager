@@ -310,7 +310,8 @@ class CommandScreen(Screen):
                     tmp = asyncio.create_task(self.kill(args.drones))
             self.running_tasks.add(tmp)
         except Exception as e:
-            self.logger.error(repr(e))
+            self.logger.error(f"Encountered an exception: {str(e)}")
+            self.logger.debug(f"Encountered an exception: {repr(e)}", exc_info=True)
 
     @property
     def used_drone_addrs(self):
