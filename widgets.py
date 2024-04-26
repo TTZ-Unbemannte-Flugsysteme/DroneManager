@@ -62,7 +62,7 @@ class InputWithHistory(Input):
     def add_to_history(self, item) -> None:
         # If we add extra entries, overwrite old ones
         if len(self.history) == self.history_max_length:
-            # Entry to be overriden is at rolling_zero
+            # Entry to be overridden is at rolling_zero
             self.history[self.rolling_zero] = item
             self._increase_history_rolling_pos()
         else:
@@ -77,9 +77,9 @@ class InputWithHistory(Input):
 
 class DroneOverview(Static):
 
-    COLUMN_NAMES = ["Name", "Connected", "Armed", "In-Air", "FlightMode", "Local", "Vel", "Yaw/Bat"]
-    COLUMN_WIDTHS = [10, 9, 5, 6, 11, 9, 9, 8]
-    COLUMN_ALIGN = ["<", ">", ">", ">", ">", ">", ">", ">"]
+    COLUMN_NAMES = ["Name", "Status", "FlightMode", "Local", "Vel", "Yaw/Bat"]
+    COLUMN_WIDTHS = [10, 11, 11, 9, 9, 8]
+    COLUMN_ALIGN = ["<", ">", ">", ">", ">", ">"]
     COLUMN_SPACING = 3
 
     def __init__(self, drone, update_frequency, *args, **kwargs):
@@ -93,10 +93,12 @@ class DroneOverview(Static):
 
     @classmethod
     def header_string(cls):
-        return (" "*cls.COLUMN_SPACING).join([f"{cls.COLUMN_NAMES[i]:{cls.COLUMN_ALIGN[i]}{cls.COLUMN_WIDTHS[i]}}" for i in range(len(cls.COLUMN_NAMES))])
+        return (" "*cls.COLUMN_SPACING).join([f"{cls.COLUMN_NAMES[i]:{cls.COLUMN_ALIGN[i]}{cls.COLUMN_WIDTHS[i]}}"
+                                              for i
+                                              in range(len(cls.COLUMN_NAMES))])
 
     @classmethod
-    def gagdet_width(cls):
+    def gadget_width(cls):
         return (len(cls.COLUMN_NAMES)-1)*cls.COLUMN_SPACING + sum(cls.COLUMN_WIDTHS)
 
     def on_mount(self) -> None:
@@ -117,25 +119,28 @@ class DroneOverview(Static):
                 except KeyError:
                     pass
                 output = ""
-                output += self.format_string.format("", "", "", "", "",
-                                                    f"F: {self.drone.position_ned[0]:{self.COLUMN_WIDTHS[5]-3}.3f}",
-                                                    f"F: {self.drone.velocity[0]:{self.COLUMN_WIDTHS[6]-3}.3f}",
-                                                    f"Y: {self.drone.attitude[2]:{self.COLUMN_WIDTHS[7]-3}.1f}") + "\n"
+                output += self.format_string.format("",
+                                                    f"Conn: {str(self.drone.is_connected):>{self.COLUMN_WIDTHS[1]-6}}",
+                                                    "",
+                                                    f"F: {self.drone.position_ned[0]:{self.COLUMN_WIDTHS[3]-3}.3f}",
+                                                    f"F: {self.drone.velocity[0]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"Y: {self.drone.attitude[2]:{self.COLUMN_WIDTHS[5]-3}.1f}") + "\n"
                 output += self.format_string.format(self.drone.name,
-                                                    str(self.drone.is_connected),
-                                                    str(self.drone.is_armed),
-                                                    str(self.drone.in_air),
+                                                    f"Arm: {str(self.drone.is_armed):>{self.COLUMN_WIDTHS[1]-5}}",
                                                     str(self.drone.flightmode),
-                                                    f"R: {self.drone.position_ned[1]:{self.COLUMN_WIDTHS[5]-3}.3f}",
-                                                    f"R: {self.drone.velocity[1]:{self.COLUMN_WIDTHS[6]-3}.3f}",
-                                                    f"{battery_remaining:{self.COLUMN_WIDTHS[7]-1}.0f}%") + "\n"
-                output += self.format_string.format("", "", "", "", "",
-                                                    f"D: {self.drone.position_ned[2]:{self.COLUMN_WIDTHS[5]-3}.3f}",
-                                                    f"D: {self.drone.velocity[2]:{self.COLUMN_WIDTHS[6]-3}.3f}",
-                                                    f"{battery_voltage:{self.COLUMN_WIDTHS[7]-1}.2f}V") + "\n"
+                                                    f"R: {self.drone.position_ned[1]:{self.COLUMN_WIDTHS[3]-3}.3f}",
+                                                    f"R: {self.drone.velocity[1]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"{battery_remaining:{self.COLUMN_WIDTHS[5]-1}.0f}%") + "\n"
+                output += self.format_string.format("",
+                                                    f"Air: {str(self.drone.in_air):>{self.COLUMN_WIDTHS[1]-5}}",
+                                                    "",
+                                                    f"D: {self.drone.position_ned[2]:{self.COLUMN_WIDTHS[3]-3}.3f}",
+                                                    f"D: {self.drone.velocity[2]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"{battery_voltage:{self.COLUMN_WIDTHS[5]-1}.2f}V") + "\n"
                 self.update(Text(output, style=f"bold {color}"))
             except Exception as e:
-                self.logger.debug(f"Exception updating status pane for drone {self.drone.name}: {repr(e)}", exc_info=True)
+                self.logger.debug(f"Exception updating status pane for drone {self.drone.name}: {repr(e)}",
+                                  exc_info=True)
             await asyncio.sleep(1 / self.update_frequency)
 
 

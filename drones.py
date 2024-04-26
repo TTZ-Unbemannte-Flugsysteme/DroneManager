@@ -33,8 +33,6 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
-
-# TODO: Connected attribute does not work with passthrough, fix that
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: Fix the dummy drone so it actually works again
@@ -97,7 +95,6 @@ class Drone(ABC, threading.Thread):
         self.stop_execution()
 
     async def _task_scheduler(self):
-        # TODO: Have a think about error behaviour
         while True:
             while len(self.action_queue) > 0:
                 if self.is_paused:
@@ -564,11 +561,9 @@ class DroneMAVSDK(Drone):
             await asyncio.sleep(1/self._position_update_freq)
         return result
 
-    async def _can_takeoff(self):
+    def _can_takeoff(self):
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
-        #if dist_ned(self.position_ned, np.zeros_like(self.position_ned)) < self.TAKEOFF_THRESH:
-        #    raise RuntimeError("Can't take off away from 0,0,0!")
 
     async def takeoff(self) -> bool:
         return await self._takeoff_using_offboard()
@@ -582,7 +577,7 @@ class DroneMAVSDK(Drone):
     async def _takeoff_using_takeoffmode(self):
         self.logger.info("Trying to take off...")
         await super().takeoff()
-        await self._can_takeoff()
+        self._can_takeoff()
         result = await self._action_error_wrapper(self.system.action.takeoff)
         if isinstance(result, Exception):
             self.logger.warning("Couldn't takeoff!")
@@ -597,7 +592,7 @@ class DroneMAVSDK(Drone):
     async def _takeoff_using_offboard(self, altitude=2.5, tolerance=0.25):
         self.logger.info("Trying to take off in offboard mode...")
         await super().takeoff()
-        await self._can_takeoff()
+        self._can_takeoff()
         target_pos_yaw = self._get_pos_ned_yaw()
         target_pos_yaw[2] -= altitude  # Setpoint higher than current position
         await self._set_setpoint_ned(target_pos_yaw)
@@ -651,7 +646,7 @@ class DroneMAVSDK(Drone):
         await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
         return True
 
-    async def _can_do_in_air_commands(self):
+    def _can_do_in_air_commands(self):
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
 
@@ -660,7 +655,7 @@ class DroneMAVSDK(Drone):
         cur_paused = False
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
-        #await self._can_do_in_air_commands()
+        self._can_do_in_air_commands()
         await self._set_setpoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
@@ -688,7 +683,7 @@ class DroneMAVSDK(Drone):
         self.logger.info(f"Flying to {latitude, longitude, amsl, yaw} with tolerance {tolerance}m")
         cur_paused = False
         await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
-        #await self._can_do_in_air_commands()
+        self._can_do_in_air_commands()
         await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
         while True:
             if self.is_paused and not cur_paused:
@@ -722,7 +717,7 @@ class DroneMAVSDK(Drone):
     async def land(self):
         self.logger.info("Trying to land...")
         await super().land()
-        await self._land_using_offbord_mode()
+        return await self._land_using_offbord_mode()
 
     async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=1):
         self.logger.info("Landing!")
@@ -772,6 +767,10 @@ class DroneMAVSDK(Drone):
             await self._passthrough.stop()
             del self._passthrough
         self.system.__del__()
+        if self._server_process:
+            self._server_process.terminate()
+        for handler in self.logging_handlers:
+            self.logger.removeHandler(handler)
 
     async def stop(self):
         # Override whatever else is going on and land
@@ -780,20 +779,14 @@ class DroneMAVSDK(Drone):
         if not self.is_connected:
             return True
         await self.land()
-        while self.in_air:
-            await asyncio.sleep(0.1)
         await self.disarm()
         await self.stop_execution()
-        if self._server_process:
-            self._server_process.terminate()
         await super().stop()
         return True
 
     async def kill(self):
         await self._action_error_wrapper(self.system.action.kill)
         await self.stop_execution()
-        if self._server_process:
-            self._server_process.terminate()
         await super().kill()
         return True
 
