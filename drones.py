@@ -650,6 +650,57 @@ class DroneMAVSDK(Drone):
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
 
+    async def yaw_to(self, x, y, z, target_yaw, yaw_rate=30):
+        """ Move to the point x,y,z, yawing to the target heading as you do so at the specified rate.
+
+        To spin in place pass current position to x,y,z. Pausable.
+
+        :param x:
+        :param y:
+        :param z:
+        :param target_yaw: Heading as a degree fom -180 to 180, right positive, 0 forward
+        :param yaw_rate:
+        :return:
+        """
+        # Add 180, take modulo 360 and subtract 180 to get proper range
+        target_yaw = math.fmod(target_yaw + 180, 360) - 180
+        dif_yaw = target_yaw - self.attitude[2]
+        freq = 10
+        time_required = dif_yaw / yaw_rate
+        n_steps = math.ceil(time_required*freq)
+        step_size = dif_yaw/n_steps
+        pos_yaw = np.asarray([x,y,z,0], dtype=float)
+        for i in range(n_steps):
+            if not self.is_paused:
+                pos_yaw[3] = step_size*(i+1)
+                await self._set_setpoint_ned(pos_yaw)
+            await asyncio.sleep(1/freq)
+
+    async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
+        """ Spin in place at the given rate for the given duration.
+
+        Pausable
+
+        :param yaw_rate:
+        :param duration:
+        :param direction:
+        :return:
+        """
+        assert direction in ["cw", "ccw"], "Invalid spin direction, must be either 'cw' or 'ccw'"
+        # TODO: Check how this behaves
+        x, y, z = self.position_ned
+        pos_yaw = np.asarray([x, y, z, 0], dtype=float)
+        freq = 10
+        n_steps = math.ceil(duration * freq)
+        step_size = yaw_rate / freq
+        if direction == "ccw":
+            step_size = - step_size
+        for i in range(n_steps):
+            if not self.is_paused:
+                pos_yaw[3] = step_size*(i+1)
+                await self._set_setpoint_ned(pos_yaw)
+            await asyncio.sleep(1/freq)
+
     async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
         self.logger.info(f"Flying to {target_pos} with tolerance {tolerance}m")
         cur_paused = False
@@ -719,7 +770,7 @@ class DroneMAVSDK(Drone):
         await super().land()
         return await self._land_using_offbord_mode()
 
-    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=1):
+    async def _land_using_offbord_mode(self, error_thresh=0.001, min_time=1):
         self.logger.info("Landing!")
         ema_alt_error = 0
         going_down = True

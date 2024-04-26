@@ -252,7 +252,11 @@ class CommandScreen(Screen):
                                                          "drones are listed, kills all of them.")
         kill_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to kill.")
 
-        test_parser = subparsers.add_parser("test", help="Executes the 'test' function")
+        ql_parser = subparsers.add_parser("qualify", help="Executes the 'qualify' function for the specified drones")
+        ql_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to qualify.")
+        ql_parser.add_argument("-a", "--altitude", type=float, required=False, default=2.0,
+                               help="Altitude in meters above takeoff at which the course will be completed. "
+                                    "Positive for up. Default 2m")
 
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
@@ -310,7 +314,7 @@ class CommandScreen(Screen):
                                                           tol=args.tolerance))
             elif args.command == "orbit":
                 tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
-                                                     args.center_long, args.amsl))
+                                                        args.center_long, args.amsl))
             elif args.command == "land":
                 tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
             elif args.command == "pause":
@@ -328,61 +332,54 @@ class CommandScreen(Screen):
                         self._kill_counter += 1
                 else:
                     tmp = asyncio.create_task(self.dm.kill(args.drones))
-            elif args.command == "test":
-                tmp = asyncio.create_task(self.test())
+            elif args.command == "qualify":
+                tmp = asyncio.create_task(self.qualify(args.drones, args.altitude))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
 
-    async def test(self):
-        offset = {"gavin": (0, -2.8, 0),
-                  "jaina": (0, 2.8, 1),
-                  "luke": (0, 0, 2)}
-        for name in offset:
-            tmp = asyncio.create_task(self._test(name, offset[name]))
+    def qualify(self, names, altitude=2.0):
+        good_names = []
+        for name in names:
+            if name in self.dm.drones:
+                good_names.append(name)
+            else:
+                self.logger.warning(f"No drone named {name}")
+        for name in good_names:
+            tmp = asyncio.create_task(self._qualify(name, altitude))
 
-    async def _test(self, name, offset):
-        x, y, z = offset
+    async def _qualify(self, name, altitude):
+        cur_pos = self.dm.drones[name].position_ned
+        x, y, z = cur_pos
         try:
             drone = self.dm.drones[name]
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
             return
-        altitude = 2.0
         try:
-            tmp = asyncio.create_task(self.dm.arm([name]))
-            await asyncio.sleep(4)
-            tmp = asyncio.create_task(self.dm.takeoff([name]))
-            await asyncio.sleep(6)
+            await self.dm.arm([name])
+            await asyncio.sleep(2)
+            await self.dm.takeoff([name])
+            await asyncio.sleep(2)
         ############
-            self.logger.info("Big move")
-            await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude-z, 0], dtype=float))
+            self.logger.info("Big move forward 5m")
+            await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
-            await drone._set_setpoint_ned(np.asarray([0+x, y, -altitude-z, 0], dtype=float))
+            await drone._set_setpoint_ned(np.asarray([0+x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(9)
         #############
-            await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude-z, 0], dtype=float))
+            await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
-            #self.logger.info("Turning, rate 10deg/2, 4Hz")
-            #for i in range(144):
-            #    await drone._set_setpoint_ned(np.asarray([3, 0, -altitude, 2.5*(i+1)], dtype=float))
-            #    await asyncio.sleep(0.25)
-            #await asyncio.sleep(3)
             self.logger.info("Turning, rate 10deg/2, 10Hz")
-            for i in range(360):
-                await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude-z, 1.*(i+1)], dtype=float))
-                await asyncio.sleep(0.1)
-            await asyncio.sleep(3)
+            await drone.spin_at_rate(10, 36, "cw")
+            await asyncio.sleep(2)
             self.logger.info("Turning, rate 30deg/2, 10Hz")
-            for i in range(120):
-                await drone._set_setpoint_ned(np.asarray([5+x, y, -altitude-z, 3. * (i + 1)], dtype=float))
-                await asyncio.sleep(0.1)
-            await asyncio.sleep(3)
+            await drone.spin_at_rate(30, 12, "cw")
+            await asyncio.sleep(2)
         #############
-            await drone._set_setpoint_ned(np.asarray([0+x, y, -altitude-z, 0], dtype=float))
+            await drone._set_setpoint_ned(np.asarray([0+x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
-            tmp = asyncio.create_task(self.dm.land([name]))
-            await asyncio.sleep(5)
+            await self.dm.land([name])
         except Exception as e:
             self.logger.error(f"{repr(e)}", exc_info=True)
 
