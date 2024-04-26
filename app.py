@@ -329,24 +329,6 @@ class CommandScreen(Screen):
         except Exception as e:
             self.logger.error(repr(e))
 
-    async def _stop_drone(self, name):
-        try:
-            drone = self.drones[name]
-            result = await drone.stop()
-            await self._remove_drone_object(name)
-            return result
-        except KeyError:
-            self.logger.debug(f"Don't have a drone with name {name}")
-
-    async def _kill_drone(self, name):
-        try:
-            drone = self.drones[name]
-            result = await drone.kill()
-            await self._remove_drone_object(name)
-            return result
-        except KeyError:
-            self.logger.debug(f"Don't have a drone with name {name}")
-
     async def action_stop(self, names):
         stop_app = False
         if not names:
