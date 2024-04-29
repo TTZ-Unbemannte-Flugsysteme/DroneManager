@@ -14,7 +14,7 @@ formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - 
 
 
 class MAVPassthrough:
-    def __init__(self, dialect="cubepilot", loggername="passthrough"):
+    def __init__(self, dialect="cubepilot", loggername="passthrough", log_messages=True):
         self.dialect = dialect
         self.source_system = 245
         self.source_component = 201
@@ -37,6 +37,7 @@ class MAVPassthrough:
         self.logger.addHandler(file_handler)
         self.logging_handlers = []
         self.logging_handlers.append(file_handler)
+        self.log_messages = log_messages
 
         self.running_tasks = set()
         self.should_stop = False
@@ -141,7 +142,8 @@ class MAVPassthrough:
                     if msg is None:
                         await asyncio.sleep(0.0001)
                     else:
-                        self.logger.debug(f"Message from GCS, {msg.to_dict()}")
+                        if self.log_messages:
+                            self.logger.debug(f"Message from GCS, {msg.to_dict()}")
                         self.time_of_last_gcs = time.time_ns()
                         if self.con_drone_in is not None and self.connected_to_gcs():  # Send onward to the drone
                             self.con_drone_in.mav.srcSystem = msg.get_srcSystem()
@@ -167,7 +169,8 @@ class MAVPassthrough:
                     if msg is None:
                         await asyncio.sleep(0.0001)
                     else:
-                        self.logger.debug(f"Message from Drone, {msg.to_dict()}")
+                        if self.log_messages:
+                            self.logger.debug(f"Message from Drone, {msg.to_dict()}")
                         self.time_of_last_drone = time.time_ns()
                         if self.con_gcs is not None and self.connected_to_drone():
                             self.con_gcs.mav.srcSystem = msg.get_srcSystem()

@@ -214,11 +214,41 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def takeoff(self) -> bool:
+    async def takeoff(self, altitude=-2.0) -> bool:
+        """
+
+        Note that altitude is negative for up.
+        :param altitude:
+        :return:
+        """
         pass
 
     @abstractmethod
     async def change_flight_mode(self, flightmode) -> bool:
+        pass
+
+    @abstractmethod
+    async def set_waypoint_ned(self, point) -> bool:
+        pass
+
+    def is_at_pos(self, target_pos, tolerance=0.25) -> bool:
+        cur_pos = self.position_ned
+        if dist_ned(cur_pos, target_pos[:3]) < tolerance:
+            return True
+        return False
+
+    def is_at_heading(self, target_heading, tolerance=2) -> bool:
+        cur_heading = self.attitude[2]
+        if abs(cur_heading - target_heading) < tolerance:
+            return True
+        return False
+
+    @abstractmethod
+    async def yaw_to(self, x, y, z, target_yaw, yaw_rate, tolerance) -> bool:
+        pass
+
+    @abstractmethod
+    async def spin_at_rate(self, yaw_rate, duration, direction="cw") -> bool:
         pass
 
     @abstractmethod
@@ -337,7 +367,7 @@ class DroneMAVSDK(Drone):
         self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
-        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK")
+        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
 
     def __del__(self):
         self.system.__del__()
@@ -454,10 +484,13 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._status_check()))
 
     async def _configure_message_rates(self) -> None:
-        await self.system.telemetry.set_rate_position(self._position_update_freq)
-        await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
-        await self.system.telemetry.set_rate_attitude_euler(self._position_update_freq)
-        await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
+        try:
+            await self.system.telemetry.set_rate_position(self._position_update_freq)
+            await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
+            await self.system.telemetry.set_rate_attitude_euler(self._position_update_freq)
+        except Exception as e:
+            self.logger.warning(f"Couldn't set message rate!")
+            self.logger.debug(f"{repr(e)}", exc_info=True)
 
     async def _connect_check(self):
         if self._passthrough:
@@ -565,8 +598,15 @@ class DroneMAVSDK(Drone):
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
 
-    async def takeoff(self) -> bool:
-        return await self._takeoff_using_offboard()
+    async def takeoff(self, altitude=-2.0) -> bool:
+        """
+
+        Note that altitude is negative for  up.
+
+        :param altitude:
+        :return:
+        """
+        return await self._takeoff_using_offboard(altitude=altitude)
 
     def _get_pos_ned_yaw(self):
         pos_yaw = np.zeros((4,))
@@ -574,9 +614,10 @@ class DroneMAVSDK(Drone):
         pos_yaw[3] = self.attitude[2]
         return pos_yaw
 
-    async def _takeoff_using_takeoffmode(self):
+    async def _takeoff_using_takeoffmode(self, altitude=-2.5):
+        # TODO: Change takeoff altitude by changing PX4 param before going into takeoff mode
         self.logger.info("Trying to take off...")
-        await super().takeoff()
+        await super().takeoff(altitude=altitude)
         self._can_takeoff()
         result = await self._action_error_wrapper(self.system.action.takeoff)
         if isinstance(result, Exception):
@@ -589,13 +630,13 @@ class DroneMAVSDK(Drone):
         self.logger.info("Completed takeoff!")
         return True
 
-    async def _takeoff_using_offboard(self, altitude=2.5, tolerance=0.25):
-        self.logger.info("Trying to take off in offboard mode...")
-        await super().takeoff()
+    async def _takeoff_using_offboard(self, altitude=-2.5, tolerance=0.25):
+        self.logger.info(f"Trying to take off to {-altitude}m in offboard mode...")
+        await super().takeoff(altitude=altitude)
         self._can_takeoff()
         target_pos_yaw = self._get_pos_ned_yaw()
-        target_pos_yaw[2] -= altitude  # Setpoint higher than current position
-        await self._set_setpoint_ned(target_pos_yaw)
+        target_pos_yaw[2] = altitude
+        await self.set_waypoint_ned(target_pos_yaw)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         self.logger.info("Taking off!")
@@ -633,7 +674,7 @@ class DroneMAVSDK(Drone):
             self.logger.warning("Couldn't change flight mode!")
         return result
 
-    async def _set_setpoint_ned(self, point):
+    async def set_waypoint_ned(self, point):
         # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
         point_ned_yaw = PositionNedYaw(*point)
         await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
@@ -650,7 +691,7 @@ class DroneMAVSDK(Drone):
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
 
-    async def yaw_to(self, x, y, z, target_yaw, yaw_rate=30):
+    async def yaw_to(self, x, y, z, target_yaw, yaw_rate=30, tolerance=2):
         """ Move to the point x,y,z, yawing to the target heading as you do so at the specified rate.
 
         To spin in place pass current position to x,y,z. Pausable.
@@ -658,8 +699,9 @@ class DroneMAVSDK(Drone):
         :param x:
         :param y:
         :param z:
-        :param target_yaw: Heading as a degree fom -180 to 180, right positive, 0 forward
+        :param target_yaw: Heading as a degree fom -180 to 180, right positive, 0 forward.
         :param yaw_rate:
+        :param tolerance: How close we have to get to the heading before this function returns.
         :return:
         """
         # Add 180, take modulo 360 and subtract 180 to get proper range
@@ -669,12 +711,13 @@ class DroneMAVSDK(Drone):
         time_required = dif_yaw / yaw_rate
         n_steps = math.ceil(time_required*freq)
         step_size = dif_yaw/n_steps
-        pos_yaw = np.asarray([x,y,z,0], dtype=float)
+        pos_yaw = np.asarray([x, y, z, 0], dtype=float)
         for i in range(n_steps):
             if not self.is_paused:
                 pos_yaw[3] = step_size*(i+1)
-                await self._set_setpoint_ned(pos_yaw)
+                await self.set_waypoint_ned(pos_yaw)
             await asyncio.sleep(1/freq)
+        return self.is_at_heading(target_heading=target_yaw, tolerance=tolerance)
 
     async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
         """ Spin in place at the given rate for the given duration.
@@ -686,8 +729,7 @@ class DroneMAVSDK(Drone):
         :param direction:
         :return:
         """
-        assert direction in ["cw", "ccw"], "Invalid spin direction, must be either 'cw' or 'ccw'"
-        # TODO: Check how this behaves
+        await super().spin_at_rate(yaw_rate, duration, direction=direction)
         x, y, z = self.position_ned
         pos_yaw = np.asarray([x, y, z, 0], dtype=float)
         freq = 10
@@ -698,17 +740,17 @@ class DroneMAVSDK(Drone):
         for i in range(n_steps):
             if not self.is_paused:
                 pos_yaw[3] = step_size*(i+1)
-                await self._set_setpoint_ned(pos_yaw)
+                await self.set_waypoint_ned(pos_yaw)
             await asyncio.sleep(1/freq)
 
-    async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.5):
+    async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.25, put_into_offboard=True):
         self.logger.info(f"Flying to {target_pos} with tolerance {tolerance}m")
         cur_paused = False
         await super().fly_to_point(target_pos, tolerance)
         # Do set_setpoint, but also put into offboard mode if we are not already in it?
         self._can_do_in_air_commands()
-        await self._set_setpoint_ned(target_pos)
-        if self._flightmode != FlightMode.OFFBOARD:
+        await self.set_waypoint_ned(target_pos)
+        if put_into_offboard and self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         while True:
             if self.is_paused and not cur_paused:
@@ -717,16 +759,14 @@ class DroneMAVSDK(Drone):
                 cur_pos_yaw[:3] = self.position_ned
                 cur_pos_yaw[3] = self.attitude[2]
                 self.logger.debug(f"Pausing flyto command, cur pos: {cur_pos_yaw}")
-                await self._set_setpoint_ned(cur_pos_yaw)
+                await self.set_waypoint_ned(cur_pos_yaw)
             elif cur_paused and not self.is_paused:
                 cur_paused = False
                 self.logger.debug("Unpausing flyto command")
-                await self._set_setpoint_ned(target_pos)
+                await self.set_waypoint_ned(target_pos)
             elif not self.is_paused and not cur_paused:
-                cur_pos = self.position_ned
-                if dist_ned(cur_pos, target_pos[:3]) < tolerance:
-                    self.logger.info(f"Arrived at {target_pos}!")
-                    #await self.change_flight_mode("hold")
+                if self.is_at_pos(target_pos[:3], tolerance=tolerance) and self.is_at_heading(target_pos[3], tolerance=2):
+                    self.logger.info("Reached target position!")
                     return True
             await asyncio.sleep(1/self._position_update_freq)
 
@@ -770,7 +810,8 @@ class DroneMAVSDK(Drone):
         await super().land()
         return await self._land_using_offbord_mode()
 
-    async def _land_using_offbord_mode(self, error_thresh=0.001, min_time=1):
+    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=1):
+        # TODO: Check that we have reached the ground in a more robust way
         self.logger.info("Landing!")
         ema_alt_error = 0
         going_down = True
@@ -778,25 +819,25 @@ class DroneMAVSDK(Drone):
         start_time = time.time()
         target_pos = self._get_pos_ned_yaw()
         target_pos[2] += 0.1
-        await self._set_setpoint_ned(target_pos)
+        await self.set_waypoint_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
-        # TODO: Get the altitude update rate from the drone and adjust error checking frequency to that
+        update_freq = 2
+        try:
+            await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
+            update_freq = self._position_update_freq
+        except Exception as e:
+            self.logger.debug(f"Couldn't set message rate: {repr(e)}", exc_info=True)
         while going_down:
             cur_pos = self.position_ned
             ema_alt_error = dist_ned(cur_pos, old_pos) + 0.33 * ema_alt_error
-            self.logger.debug(f"Landing EMA {ema_alt_error}")
-            if ema_alt_error < error_thresh:
-                self.logger.debug("Position estimate things we landed")
-            if time.time() > start_time + min_time:
-                self.logger.debug("Left minimum landing time")
             if ema_alt_error < error_thresh and time.time() > start_time + min_time:
                 break
             old_pos = cur_pos.copy()
             cur_alt = self.position_ned[2]
             target_pos[2] = cur_alt + 0.5
-            await self._set_setpoint_ned(target_pos)
-            await asyncio.sleep(1/self._position_update_freq)
+            await self.set_waypoint_ned(target_pos)
+            await asyncio.sleep(1/update_freq)
         self.logger.info("Landed!")
         return True
 
