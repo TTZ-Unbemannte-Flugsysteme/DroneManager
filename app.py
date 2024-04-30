@@ -90,6 +90,7 @@ class RedCross:
         self.dm = dm
         self.drones: Dict[str, DemoDrone] = OrderedDict()
         self.logger = logger
+        self.cur_stage = 0
 
     def remove(self, name):
         try:
@@ -163,9 +164,9 @@ class RedCross:
             for i, name in enumerate(self.drones):
                 result = results[i]
                 if isinstance(result, Exception):
-                    self.logger.error(f"Drone {name} couldn't complete this heading change, removing...")
+                    self.logger.error(f"Drone {name} couldn't complete this heading change!")
                     self.logger.debug(repr(result), exc_info=True)
-                    self.remove(name)
+                    #self.remove(name)
 
             # Make x,y,z moves
             for i, name in enumerate(self.drones):
@@ -175,8 +176,6 @@ class RedCross:
             # Check that all drones have reached the waypoint before proceeding
             while not any(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)
-            # TODO: URGENT Prevent this function from locking up if a drone never reaches its waypoint
-            # TODO: Probably use timeouts for this?
         return True
 
     async def stage_1(self):
@@ -545,7 +544,7 @@ class CommandScreen(Screen):
                 else:
                     tmp = asyncio.create_task(self.dm.kill(args.drones))
             elif args.command == "qualify":
-                tmp = asyncio.create_task(self.qualify(args.drones, args.altitude))
+                self.qualify(args.drones, args.altitude)
 
             elif args.command == "rc-add":
                 self.rc_add_drones(args.drones)
