@@ -146,16 +146,16 @@ class DroneManager:
             self.logger.error(repr(e))
 
     async def arm(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.arm, names,
-                                          "Arming drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.arm, names,
+                                                 "Arming drone(s) {}.", schedule=schedule)
 
     async def disarm(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.disarm, names,
-                                          "Disarming drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.disarm, names,
+                                                 "Disarming drone(s) {}.", schedule=schedule)
 
     async def takeoff(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.takeoff, names,
-                                          "Takeoff for Drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.takeoff, names,
+                                                 "Takeoff for Drone(s) {}.", schedule=schedule)
 
     async def change_flightmode(self, names, flightmode, schedule=False):
         await self._multiple_drone_action(self.drone_class.change_flight_mode,

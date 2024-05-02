@@ -364,7 +364,7 @@ class DroneMAVSDK(Drone):
         self._heading: float = math.nan
         self._batteries: Dict[int, Battery] = {}
         self._running_tasks = []
-        self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
+        self._position_update_freq = 10                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
         self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
@@ -571,15 +571,16 @@ class DroneMAVSDK(Drone):
                 self.logger.error(f"{message.text}")
 
     async def arm(self):
+        timeout = 2
         self.logger.info("Arming!")
         await super().arm()
         result = await self._action_error_wrapper(self.system.action.arm)
         if result and not isinstance(result, Exception):
+            while not self.is_armed:
+                await asyncio.sleep(1 / self._position_update_freq)
             self.logger.info("Armed!")
         else:
             self.logger.warning("Couldn't arm!")
-        while not self.is_armed:
-            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     async def disarm(self):
@@ -587,11 +588,11 @@ class DroneMAVSDK(Drone):
         await super().disarm()
         result = await self._action_error_wrapper(self.system.action.disarm)
         if result and not isinstance(result, Exception):
+            while self.is_armed:
+                await asyncio.sleep(1 / self._position_update_freq)
             self.logger.info("Disarmed!")
         else:
             self.logger.warning("Couldn't disarm!")
-        while self.is_armed:
-            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     def _can_takeoff(self):
@@ -705,18 +706,17 @@ class DroneMAVSDK(Drone):
         :return:
         """
         # Add 180, take modulo 360 and subtract 180 to get proper range
-        target_yaw = math.fmod(target_yaw + 180, 360) - 180
-        dif_yaw = target_yaw - self.attitude[2]
-        freq = 10
-        time_required = dif_yaw / yaw_rate
-        n_steps = math.ceil(time_required*freq)
+        dif_yaw = math.fmod(target_yaw - self.attitude[2] + 180, 360) - 180
+        og_yaw = self.attitude[2]
+        time_required = abs(dif_yaw / yaw_rate)
+        n_steps = math.ceil(time_required*self._position_update_freq)
         step_size = dif_yaw/n_steps
         pos_yaw = np.asarray([x, y, z, 0], dtype=float)
         for i in range(n_steps):
             if not self.is_paused:
-                pos_yaw[3] = step_size*(i+1)
+                pos_yaw[3] = og_yaw + step_size*(i+1)
                 await self.set_waypoint_ned(pos_yaw)
-            await asyncio.sleep(1/freq)
+            await asyncio.sleep(1/self._position_update_freq)
         return self.is_at_heading(target_heading=target_yaw, tolerance=tolerance)
 
     async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
