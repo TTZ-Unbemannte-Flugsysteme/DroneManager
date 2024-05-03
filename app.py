@@ -55,7 +55,7 @@ class DemoDrone:
     def __init__(self, name, init_pos):
         self.name = name
         self.waypoint = init_pos
-        self.launch_pos = None  # Set above the actual flight altitude
+        self.launch_pos = None  # Set after takeoff
 
 
 class RedCross:
@@ -63,9 +63,9 @@ class RedCross:
     #  stage 1(at start positions)
 
     STAGE2_WP = [
-        WayPoint(0, 0, -2, 0, False, True),
-        WayPoint(3, 0, -2, 0, False, True),
-        WayPoint(3, 0, -2, 90, False, False)
+        WayPoint(0, 2, -2, 0, False, True),
+        WayPoint(3, 2, -2, 0, False, True),
+        WayPoint(3, 2, -2, 90, False, False)
     ]
 
     STAGE3_WP = [
@@ -83,8 +83,8 @@ class RedCross:
 
     STAGE5_WP = [
         WayPoint(20, 20, -2, -90, False, True),
-        WayPoint(3, 0, -2, -90, False, True),
-        WayPoint(3, 0, -2, 0, False, True),
+        WayPoint(3, 2, -2, -90, False, True),
+        WayPoint(3, 2, -2, 0, False, True),
     ]
 
     def __init__(self, logger, dm: DroneManager):
@@ -128,36 +128,25 @@ class RedCross:
 
     def formation_circle(self, waypoint: WayPoint) -> List[Tuple[float, float, float, float]]:
         # TODO: calculate radius so we have 4m between drones on circumference, with min diameter 4m
+        indices = list(range(len(self.drones)))
+        if len(self.drones) == 3:
+            indices = [2, 0, 1]
+        elif len(self.drones) == 4:
+            indices = [3, 0, 2, 1]
+        elif len(self.drones) == 5:
+            indices = [4, 3, 0, 1, 2]
         circle_radius = 5  # Adjust radius size as needed
         angle_offset = 2*math.pi/len(self.drones)
         altitudes = self.altitude_offsets()
         formation_offsets = [(circle_radius * math.sin(i*angle_offset),
                               circle_radius * math.cos(i*angle_offset),
-                              altitudes[i],
-                              -(angle_offset*i*180/math.pi + 90)) for i in range(len(self.drones))]
+                              altitudes[alt],
+                              -(angle_offset*i*180/math.pi + 90)) for alt, i in enumerate(indices)]
         position_yaw_local_drones = [(waypoint.x + formation_offsets[i][0],
                                       waypoint.y + formation_offsets[i][1],
                                       waypoint.z + formation_offsets[i][2],
                                       formation_offsets[i][3]) for i in range(len(self.drones))]
-        # Which drone gets which position
-        # Assumes that the drones are lined up roughly centered in front of the circle
-        if len(self.drones) == 3:
-            return [position_yaw_local_drones[2],
-                    position_yaw_local_drones[0],
-                    position_yaw_local_drones[1]]
-        elif len(self.drones) == 4:
-            return [position_yaw_local_drones[3],
-                    position_yaw_local_drones[0],
-                    position_yaw_local_drones[2],
-                    position_yaw_local_drones[1]]
-        elif len(self.drones) == 5:
-            return [position_yaw_local_drones[4],
-                    position_yaw_local_drones[3],
-                    position_yaw_local_drones[0],
-                    position_yaw_local_drones[1],
-                    position_yaw_local_drones[2]]
-        else:
-            return position_yaw_local_drones
+        return position_yaw_local_drones
 
     def formation(self, waypoint) -> List[Tuple[float, float, float, float]]:
         if waypoint.in_circle:
@@ -232,7 +221,6 @@ class RedCross:
             for name in self.drones:
                 x, y, z = self.dm.drones[name].position_ned
                 yaw = self.dm.drones[name].attitude[2]
-                self.drones[name].waypoint = (x, y, z, yaw)
                 self.drones[name].launch_pos = (x, y, z, yaw)
             self.logger.info("Stage 1 complete!")
         except Exception as e:
@@ -274,7 +262,7 @@ class RedCross:
                 self.drones[name].waypoint = self.drones[name].launch_pos
                 await drone.set_waypoint_ned(self.drones[name].launch_pos)
             # Check that all drones have reached the waypoint before proceeding
-            while not any(self._are_at_coordinates()):
+            while not all(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)
             await self.dm.land(self.drones.keys())
             self.logger.info("All drones landed!")
