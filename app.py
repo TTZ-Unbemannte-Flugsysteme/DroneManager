@@ -221,7 +221,7 @@ class RedCross:
             for name in self.drones:
                 x, y, z = self.dm.drones[name].position_ned
                 yaw = self.dm.drones[name].attitude[2]
-                self.drones[name].launch_pos = (x, y, z, yaw)
+                self.drones[name].launch_pos = np.asarray([x, y, z, yaw])
             self.logger.info("Stage 1 complete!")
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)
