@@ -33,6 +33,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
+# TODO: Fix yaw_to so it moves the correct direction
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: Fix the dummy drone so it actually works again
