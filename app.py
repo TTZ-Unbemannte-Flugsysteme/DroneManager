@@ -3,13 +3,12 @@ import datetime
 import os
 import argparse
 import shlex
-import math
 import numpy as np
-from typing import Dict, List, Tuple
-from collections import OrderedDict
+from typing import Dict
 
 from dronecontrol import DroneManager
 from drones import Drone
+from redcross import RedCross
 
 import textual.css.query
 from textual import on, events
@@ -41,205 +40,6 @@ DRONE_DICT = {
 UPDATE_RATE = 20  # How often the various screens update in Hz
 
 
-class WayPoint:
-    def __init__(self, x, y, z, yaw, in_circle, offset_altitudes):
-        self.x = x
-        self.y = y
-        self.z = z
-        self.heading = yaw
-        self.in_circle = in_circle
-        self.offset_altitudes = offset_altitudes
-
-
-class DemoDrone:
-    def __init__(self, name, init_pos):
-        self.name = name
-        self.waypoint = init_pos
-        self.launch_pos = None  # Set above the actual flight altitude
-
-
-class RedCross:
-    # TODO: Checks to prevent flying in the wrong stage (only allow current stage +1 and reset to stage 0(landed) or
-    #  stage 1(at start positions)
-
-    STAGE2_WP = [
-        WayPoint(3, 0, -2, 0, False, True),
-        WayPoint(3, 0, -2, 90, False, False)
-    ]
-
-    STAGE3_WP = [
-        WayPoint(3, 37, -2, 90, False, False),
-        WayPoint(3, 37, -2, -90, False, True),
-        WayPoint(27, 37, -2, -90, False, True),
-        WayPoint(27, 37, -2, -90, False, False),
-        WayPoint(27, 20, -2, -90, False, False),
-    ]
-
-    STAGE4_WP = [
-        WayPoint(27, 20, -2, -90, False, True),
-        WayPoint(31, 21, -2, -90, True, True),
-    ]
-
-    STAGE5_WP = [
-        WayPoint(27, 20, -2, -90, False, True),
-        WayPoint(3, 0, -2, -90, False, True),
-        WayPoint(3, 0, -2, 90, False, True),
-    ]
-
-    def __init__(self, logger, dm: DroneManager):
-        self.dm = dm
-        self.drones: Dict[str, DemoDrone] = OrderedDict()
-        self.logger = logger
-        self.cur_stage = 0
-
-    def remove(self, name):
-        try:
-            self.drones.pop(name)
-        except KeyError:
-            self.logger.warning(f"No drone named {name} in this demo!")
-
-    def add(self, name):
-        assert name in self.dm.drones, f"Not connected to a drone with name {name}"
-        if name in self.drones:
-            pass  # Don't add the same drone twice
-        else:
-            x, y, z = self.dm.drones[name].position_ned
-            yaw = self.dm.drones[name].attitude[2]
-            self.drones[name] = DemoDrone(name,  (x, y, z, yaw))
-
-    def current_drone_list(self):
-        return [drone.name for name, drone in self.drones.items()]
-
-    def formation_line(self, waypoint: WayPoint) -> List[Tuple[float, float, float, float]]:
-        # Returns a list with position_yaw coordinates for each drone
-        forward = 3
-        right = 0
-        altitude = -1 if waypoint.offset_altitudes else 0
-        position_yaw_local_drones = [(waypoint.x + forward*i,
-                                      waypoint.y + right*i,
-                                      waypoint.z + altitude*i,
-                                      waypoint.heading) for i in range(len(self.drones))]
-        return position_yaw_local_drones
-
-    def formation_circle(self, waypoint: WayPoint) -> List[Tuple[float, float, float, float]]:
-        circle_radius = 6  # Adjust radius size as needed
-        angle_offset = 2*math.pi/len(self.drones)
-        altitude = -1 if waypoint.offset_altitudes else 0
-        position_yaw_local_drones = [(waypoint.x + circle_radius * math.sin(i*angle_offset),
-                                      waypoint.y + circle_radius * math.cos(i*angle_offset),
-                                      waypoint.z + altitude*i,
-                                      waypoint.heading) for i in range(len(self.drones))]
-        return position_yaw_local_drones
-
-    def formation(self, waypoint) -> List[Tuple[float, float, float, float]]:
-        if waypoint.in_circle:
-            return self.formation_circle(waypoint)
-        else:
-            return self.formation_line(waypoint)
-
-    def _are_at_coordinates(self):
-        drones_at_coordinates = []
-        for i, name in enumerate(self.drones):
-            drone = self.dm.drones[name]
-            at_pos = drone.is_at_pos(np.asarray(self.drones[name].waypoint[:3]))
-            at_heading = drone.is_at_heading(self.drones[name].waypoint[3])
-            if at_pos and at_heading:
-                drones_at_coordinates.append(True)
-            else:
-                drones_at_coordinates.append(False)
-        return drones_at_coordinates
-
-    async def fly_stage(self, waypoints):
-        for waypoint in waypoints:
-            coordinates = self.formation(waypoint)
-
-            # Spin first
-            coros = []
-            for i, name in enumerate(self.drones):
-                drone = self.dm.drones[name]
-                x, y, z = drone.position_ned
-                new_heading = coordinates[i][3]
-                coros.append(drone.yaw_to(x, y, z, new_heading, 20, 2))
-            results = await asyncio.wait_for(asyncio.gather(*coros, return_exceptions=True), timeout=15)
-            for i, name in enumerate(self.drones):
-                result = results[i]
-                if isinstance(result, Exception):
-                    self.logger.error(f"Drone {name} couldn't complete this heading change!")
-                    self.logger.debug(repr(result), exc_info=True)
-                    #self.remove(name)
-
-            # Make x,y,z moves
-            for i, name in enumerate(self.drones):
-                drone = self.dm.drones[name]
-                self.drones[name].waypoint = coordinates[i]
-                await drone.set_waypoint_ned(coordinates[i])
-            # Check that all drones have reached the waypoint before proceeding
-            while not any(self._are_at_coordinates()):
-                await asyncio.sleep(0.1)
-        return True
-
-    async def stage_1(self):
-        self.logger.info(f"Starting stage 1 with {self.current_drone_list()}")
-        base_altitude = -2.0
-        takeoff_offsets = [-i for i in range(len(self.drones))]
-        try:
-            await self.dm.arm(self.drones.keys(), schedule=True)
-            takeoff_altitudes = [base_altitude + takeoff_offsets[i] for i, name in enumerate(self.drones)]
-            self.logger.info(f"Takeoff altitudes: {takeoff_altitudes}")
-            await asyncio.gather(*[self.dm.drones[name].takeoff(altitude=base_altitude + takeoff_offsets[i]) for i, name in enumerate(self.drones)])
-            for name in self.drones:
-                x, y, z = self.dm.drones[name].position_ned
-                yaw = self.dm.drones[name].attitude[2]
-                self.drones[name].waypoint = (x, y, z, yaw)
-                self.drones[name].launch_pos = (x, y, z, yaw)
-            self.logger.info("Stage 1 complete!")
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
-
-    async def stage_2(self):
-        try:
-            self.logger.info(f"Starting stage 2 with {self.current_drone_list()}")
-            await self.fly_stage(self.STAGE2_WP)
-            self.logger.info("Stage 2 complete!")
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
-
-    async def stage_3(self):
-        try:
-            self.logger.info(f"Starting stage 3 with {self.current_drone_list()}")
-            await self.fly_stage(self.STAGE3_WP)
-            self.logger.info("Found body!")
-            self.logger.info("Stage 3 complete!")
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
-
-    async def stage_4(self):
-        try:
-            self.logger.info(f"Starting stage 4 with {self.current_drone_list()}")
-            await self.fly_stage(self.STAGE4_WP)
-            self.logger.info("Stage 4 complete!")
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
-
-    async def stage_5(self):
-        try:
-            self.logger.info(f"Starting stage 5 with {self.current_drone_list()}")
-            await self.fly_stage(self.STAGE5_WP)
-            self.logger.info("Stage 5 complete!")
-            # Fly back to launch pos
-            for name in self.drones:
-                drone = self.dm.drones[name]
-                self.drones[name].waypoint = self.drones[name].launch_pos
-                await drone.set_waypoint_ned(self.drones[name].launch_pos)
-            # Check that all drones have reached the waypoint before proceeding
-            while not any(self._are_at_coordinates()):
-                await asyncio.sleep(0.1)
-            await self.dm.land(self.drones.keys())
-            self.logger.info("All drones landed!")
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
-
-
 class StatusScreen(Screen):
 
     CSS = """
@@ -255,9 +55,9 @@ Bar {
 }
 """
 
-    def __init__(self, drone_manager, logger, *args, **kwargs):
+    def __init__(self, dm, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = drone_manager
+        self.dm: DroneManager = dm
         self.cur_drone: Drone | None = None
         self.logger = logger
         asyncio.create_task(self._update_values())
@@ -305,30 +105,23 @@ Bar {
                 pass
 
     async def _add_drone(self, name, drone):
-        try:
-            self.logger.debug(f"Adding radio button for {name}")
-            radio_selector = RadioButton(f"{name}", id=f"button_{name}")
-            radio_field = self.query_one("#droneselector", expect_type=RadioSet)
-            await radio_field.mount(radio_selector)
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
+        self.logger.debug(f"Adding radio button for {name}")
+        radio_selector = RadioButton(f"{name}", id=f"button_{name}")
+        radio_field = self.query_one("#droneselector", expect_type=RadioSet)
+        await radio_field.mount(radio_selector)
 
     async def _remove_drone(self, name):
+        if self.cur_drone is not None and self.cur_drone.name == name:
+            # Have to change current drone to prevent stuff breaking
+            self.cur_drone = None
         try:
-            if self.cur_drone is not None and self.cur_drone.name == name:
-                # Have to change current drone to prevent stuff breaking
-                self.cur_drone = None
-            try:
-                self.logger.debug(f"Removing radio button for {name}")
-                await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
-                # Move currently selected button after removal to prevent index errors
-                selector = self.query_one(f"#droneselector", expect_type=RadioSet)
-                selector.action_next_button()
-            except textual.css.query.NoMatches:
-                pass
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
-            raise
+            self.logger.debug(f"Removing radio button for {name}")
+            await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
+            # Move currently selected button after removal to prevent index errors
+            selector = self.query_one(f"#droneselector", expect_type=RadioSet)
+            selector.action_next_button()
+        except textual.css.query.NoMatches:
+            pass
 
 
 class CommandScreen(Screen):
@@ -356,9 +149,9 @@ class CommandScreen(Screen):
 }
 """
 
-    def __init__(self, drone_manager, logger, *args, **kwargs):
+    def __init__(self, dm, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = drone_manager
+        self.dm: DroneManager = dm
         self.drone_widgets: Dict[str, Widget] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
@@ -466,8 +259,9 @@ class CommandScreen(Screen):
         rc_remove_parser = subparsers.add_parser("rc-rm", help="Remove drone(s) from the redcross demo")
         rc_remove_parser.add_argument("drones", type=str, nargs="+", help="Drones to remove.")
 
-        rc_stage_parser = subparsers.add_parser("rc-stage", help="Perform stage 1 with the current drones")
-        rc_stage_parser.add_argument("stage", type=int, help="Which stage to execute. Must be consecutive to the previous stage")
+        rc_stage_parser = subparsers.add_parser("rc-stage", help="Perform a stage with the current drones")
+        rc_stage_parser.add_argument("stage", type=int,
+                                     help="Which stage to execute. Must be consecutive to the previous stage")
 
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
@@ -519,10 +313,11 @@ class CommandScreen(Screen):
             elif args.command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
             elif args.command == "flyto":
-                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw, tol=args.tolerance))
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+                                                         tol=args.tolerance))
             elif args.command == "flytogps":
                 tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                          tol=args.tolerance))
+                                                             tol=args.tolerance))
             elif args.command == "orbit":
                 tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
                                                         args.center_long, args.amsl))
@@ -564,7 +359,7 @@ class CommandScreen(Screen):
             else:
                 self.logger.warning(f"No drone named {name}")
         for name in good_names:
-            tmp = asyncio.create_task(self._qualify(name, altitude))
+            asyncio.create_task(self._qualify(name, altitude))
 
     async def _qualify(self, name, altitude):
         cur_pos = self.dm.drones[name].position_ned
@@ -691,8 +486,8 @@ class DroneApp(App):
         Binding("s", "cycle_control", "Swap Status/Control"),
     }
 
-    def __init__(self, drone_manager: DroneManager, logger=None):
-        self.drone_manager = drone_manager
+    def __init__(self, dm: DroneManager, logger=None):
+        self.drone_manager = dm
         if logger is None:
             self.logger = logging.getLogger("App")
             self.logger.setLevel(logging.DEBUG)
@@ -711,15 +506,11 @@ class DroneApp(App):
         super().__init__()
 
     def on_mount(self):
-        screen = CommandScreen(drone_manager=self.drone_manager,
-                               logger=self.logger,
-                               name="control-screen")
+        screen = CommandScreen(self.drone_manager, self.logger, name="control-screen")
         self.install_screen(screen, name=screen.name)
         self.add_mode("control", base_screen=screen)
         self.command_screen = screen
-        status_screen = StatusScreen(drone_manager=self.drone_manager,
-                                     logger=self.logger,
-                                     name="status-screen")
+        status_screen = StatusScreen(self.drone_manager, self.logger, name="status-screen")
         self.install_screen(status_screen, name=status_screen.name)
         self.add_mode("status", base_screen=status_screen)
         self.status_screen = status_screen
@@ -745,8 +536,8 @@ if __name__ == "__main__":
     start_args = start_parser.parse_args()
 
     drone_type = DummyMAVDrone if start_args.dummy else DroneMAVSDK
-    dm = DroneManager(drone_type)
-    app = DroneApp(drone_manager=dm, logger=dm.logger)
+    drone_manager = DroneManager(drone_type)
+    app = DroneApp(drone_manager, logger=drone_manager.logger)
     app.run()
 
     logging.shutdown()

@@ -33,6 +33,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
+# TODO: Fix yaw_to so it moves the correct direction
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 # TODO: Fix the dummy drone so it actually works again
@@ -364,7 +365,7 @@ class DroneMAVSDK(Drone):
         self._heading: float = math.nan
         self._batteries: Dict[int, Battery] = {}
         self._running_tasks = []
-        self._position_update_freq = 20                     # How often (per second) go-to-position commands compute if they have arrived.
+        self._position_update_freq = 10                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
         self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
@@ -571,15 +572,16 @@ class DroneMAVSDK(Drone):
                 self.logger.error(f"{message.text}")
 
     async def arm(self):
+        timeout = 2
         self.logger.info("Arming!")
         await super().arm()
         result = await self._action_error_wrapper(self.system.action.arm)
         if result and not isinstance(result, Exception):
+            while not self.is_armed:
+                await asyncio.sleep(1 / self._position_update_freq)
             self.logger.info("Armed!")
         else:
             self.logger.warning("Couldn't arm!")
-        while not self.is_armed:
-            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     async def disarm(self):
@@ -587,11 +589,11 @@ class DroneMAVSDK(Drone):
         await super().disarm()
         result = await self._action_error_wrapper(self.system.action.disarm)
         if result and not isinstance(result, Exception):
+            while self.is_armed:
+                await asyncio.sleep(1 / self._position_update_freq)
             self.logger.info("Disarmed!")
         else:
             self.logger.warning("Couldn't disarm!")
-        while self.is_armed:
-            await asyncio.sleep(1/self._position_update_freq)
         return result
 
     def _can_takeoff(self):
@@ -704,25 +706,26 @@ class DroneMAVSDK(Drone):
         :param tolerance: How close we have to get to the heading before this function returns.
         :return:
         """
+        og_yaw = self.attitude[2]
         # Add 180, take modulo 360 and subtract 180 to get proper range
-        target_yaw = math.fmod(target_yaw + 180, 360) - 180
-        dif_yaw = target_yaw - self.attitude[2]
-        freq = 10
-        time_required = dif_yaw / yaw_rate
-        n_steps = math.ceil(time_required*freq)
+        dif_yaw = math.fmod(target_yaw - og_yaw + 180, 360) - 180
+        time_required = abs(dif_yaw / yaw_rate)
+        n_steps = math.ceil(time_required*self._position_update_freq)
         step_size = dif_yaw/n_steps
         pos_yaw = np.asarray([x, y, z, 0], dtype=float)
         for i in range(n_steps):
             if not self.is_paused:
-                pos_yaw[3] = step_size*(i+1)
+                pos_yaw[3] = og_yaw + step_size*(i+1)
                 await self.set_waypoint_ned(pos_yaw)
-            await asyncio.sleep(1/freq)
-        return self.is_at_heading(target_heading=target_yaw, tolerance=tolerance)
+            await asyncio.sleep(1/self._position_update_freq)
+        while not self.is_at_heading(target_heading=target_yaw, tolerance=tolerance):
+            await asyncio.sleep(1/self._position_update_freq)
+        return True
 
     async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
         """ Spin in place at the given rate for the given duration.
 
-        Pausable
+        Pausable.
 
         :param yaw_rate:
         :param duration:
