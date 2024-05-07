@@ -17,9 +17,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, ProgressBar
 from textual.widget import Widget
 
-from widgets import InputWithHistory, TextualLogHandler, DroneOverview
+from widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
 from drones import DroneMAVSDK, DummyMAVDrone
-from betterparser import ArgParser, ArgumentParserError
 
 import logging
 
