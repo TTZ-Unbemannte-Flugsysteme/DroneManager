@@ -171,7 +171,7 @@ class RedCross:
             for i, name in enumerate(self.drones):
                 drone = self.dm.drones[name]
                 self.drones[name].waypoint = coordinates[i]
-                await drone.set_waypoint_ned(coordinates[i])
+                await drone.set_waypoint_pos_ned(coordinates[i])
             # Check that all drones have reached the waypoint before proceeding
             while not all(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)
@@ -232,7 +232,7 @@ class RedCross:
             for name in self.drones:
                 drone = self.dm.drones[name]
                 self.drones[name].waypoint = self.drones[name].launch_pos
-                await drone.set_waypoint_ned(self.drones[name].launch_pos)
+                await drone.set_waypoint_pos_ned(self.drones[name].launch_pos)
             # Check that all drones have reached the waypoint before proceeding
             while not all(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)

@@ -77,9 +77,9 @@ class InputWithHistory(Input):
 
 class DroneOverview(Static):
 
-    COLUMN_NAMES = ["Name", "Status", "FlightMode", "Local", "Vel", "Yaw/Bat"]
-    COLUMN_WIDTHS = [10, 11, 11, 9, 9, 8]
-    COLUMN_ALIGN = ["<", ">", ">", ">", ">", ">"]
+    COLUMN_NAMES = ["Name", "Status", "FlightMode", "GPS", "Local", "Vel", "Yaw/Bat"]
+    COLUMN_WIDTHS = [10, 11, 11, 16, 9, 9, 8]
+    COLUMN_ALIGN = ["<", ">", ">", ">", ">", ">", ">"]
     COLUMN_SPACING = 3
 
     def __init__(self, drone, update_frequency, *args, **kwargs):
@@ -122,21 +122,24 @@ class DroneOverview(Static):
                 output += self.format_string.format("",
                                                     f"Conn: {str(self.drone.is_connected):>{self.COLUMN_WIDTHS[1]-6}}",
                                                     "",
-                                                    f"F: {self.drone.position_ned[0]:{self.COLUMN_WIDTHS[3]-3}.3f}",
-                                                    f"F: {self.drone.velocity[0]:{self.COLUMN_WIDTHS[4]-3}.3f}",
-                                                    f"Y: {self.drone.attitude[2]:{self.COLUMN_WIDTHS[5]-3}.1f}") + "\n"
+                                                    f"LAT: {self.drone.position_global[0]:{self.COLUMN_WIDTHS[3]-6}.6f}",
+                                                    f"F: {self.drone.position_ned[0]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"F: {self.drone.velocity[0]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"Y: {self.drone.attitude[2]:{self.COLUMN_WIDTHS[6]-3}.1f}") + "\n"
                 output += self.format_string.format(self.drone.name,
                                                     f"Arm: {str(self.drone.is_armed):>{self.COLUMN_WIDTHS[1]-5}}",
                                                     str(self.drone.flightmode),
-                                                    f"R: {self.drone.position_ned[1]:{self.COLUMN_WIDTHS[3]-3}.3f}",
-                                                    f"R: {self.drone.velocity[1]:{self.COLUMN_WIDTHS[4]-3}.3f}",
-                                                    f"{battery_remaining:{self.COLUMN_WIDTHS[5]-1}.0f}%") + "\n"
+                                                    f"LONG: {self.drone.position_global[1]:{self.COLUMN_WIDTHS[3] - 6}.6f}",
+                                                    f"R: {self.drone.position_ned[1]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"R: {self.drone.velocity[1]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"{battery_remaining:{self.COLUMN_WIDTHS[6]-1}.0f}%") + "\n"
                 output += self.format_string.format("",
                                                     f"Air: {str(self.drone.in_air):>{self.COLUMN_WIDTHS[1]-5}}",
                                                     "",
-                                                    f"D: {self.drone.position_ned[2]:{self.COLUMN_WIDTHS[3]-3}.3f}",
-                                                    f"D: {self.drone.velocity[2]:{self.COLUMN_WIDTHS[4]-3}.3f}",
-                                                    f"{battery_voltage:{self.COLUMN_WIDTHS[5]-1}.2f}V") + "\n"
+                                                    f"AMSL: {self.drone.position_global[2]:{self.COLUMN_WIDTHS[3] - 6}.2f}",
+                                                    f"D: {self.drone.position_ned[2]:{self.COLUMN_WIDTHS[4]-3}.3f}",
+                                                    f"D: {self.drone.velocity[2]:{self.COLUMN_WIDTHS[5]-3}.3f}",
+                                                    f"{battery_voltage:{self.COLUMN_WIDTHS[6]-1}.2f}V") + "\n"
                 self.update(Text(output, style=f"bold {color}"))
             except Exception as e:
                 self.logger.debug(f"Exception updating status pane for drone {self.drone.name}: {repr(e)}",

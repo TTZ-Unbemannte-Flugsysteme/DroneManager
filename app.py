@@ -1,7 +1,6 @@
 import asyncio
 import datetime
 import os
-import argparse
 import shlex
 import numpy as np
 from typing import Dict
@@ -18,7 +17,7 @@ from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, 
 from textual.widget import Widget
 
 from widgets import InputWithHistory, TextualLogHandler, DroneOverview
-from drones import DroneMAVSDK, DummyMAVDrone
+from drones import DroneMAVSDK
 from betterparser import ArgParser, ArgumentParserError
 
 import logging
@@ -72,7 +71,8 @@ Bar {
                     self.query_one("#name", expect_type=Static).update(f"{self.cur_drone.name}")
                     self.query_one("#address", expect_type=Static).update(f"{self.cur_drone.drone_addr}")
                     self.query_one("#attitude", expect_type=Static).update(f"{self.cur_drone.attitude}")
-                    self.query_one("#battery", expect_type=ProgressBar).update(progress=self.cur_drone.batteries[0].remaining)
+                    self.query_one("#battery", expect_type=ProgressBar).update(
+                        progress=self.cur_drone.batteries[0].remaining)
                 else:
                     self.query_one("#name", expect_type=Static).update("NAME: NO DRONE SELECTED")
                     self.query_one("#address", expect_type=Static).update("ADDRESS: NO DRONE SELECTED")
@@ -152,7 +152,7 @@ class CommandScreen(Screen):
 }
 
 #sidebar {
-    width: 77;
+    width: 97;
 }
 """
 
@@ -303,57 +303,58 @@ class CommandScreen(Screen):
             if args.command != "kill" or args.drones:
                 self._kill_counter = 0
 
-            if args.command == "connect":
-                address = args.drone_address
-                if args.drone in DRONE_DICT and not address:
-                    address = DRONE_DICT[args.drone]
-                elif not address:
-                    address = "udp://:14540"
-                tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address, args.server_port,
-                                                                   address, args.timeout))
-            elif args.command == "arm":
-                tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
-            elif args.command == "disarm":
-                tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
-            elif args.command == "takeoff":
-                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
-            elif args.command == "mode":
-                tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
-            elif args.command == "flyto":
-                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
-                                                         tol=args.tolerance))
-            elif args.command == "flytogps":
-                tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
+            match args.command:
+                case "connect":
+                    address = args.drone_address
+                    if args.drone in DRONE_DICT and not address:
+                        address = DRONE_DICT[args.drone]
+                    elif not address:
+                        address = "udp://:14540"
+                    tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
+                                                                       args.server_port, address, args.timeout))
+                case "arm":
+                    tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
+                case "disarm":
+                    tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
+                case "takeoff":
+                    tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+                case "mode":
+                    tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
+                case "flyto":
+                    tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
                                                              tol=args.tolerance))
-            elif args.command == "orbit":
-                tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
-                                                        args.center_long, args.amsl))
-            elif args.command == "land":
-                tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
-            elif args.command == "pause":
-                tmp = asyncio.create_task(self.dm.pause(args.drones))
-            elif args.command == "resume":
-                tmp = asyncio.create_task(self.dm.resume(args.drones))
-            elif args.command == "stop":
-                tmp = asyncio.create_task(self.action_stop(args.drones))
-            elif args.command == "kill":
-                if not args.drones:
-                    if self._kill_counter:
-                        tmp = asyncio.create_task(self.dm.kill(args.drones))
+                case "flytogps":
+                    tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
+                                                                 tol=args.tolerance))
+                case "orbit":
+                    tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
+                                                            args.center_long, args.amsl))
+                case "land":
+                    tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
+                case "pause":
+                    tmp = asyncio.create_task(self.dm.pause(args.drones))
+                case "resume":
+                    tmp = asyncio.create_task(self.dm.resume(args.drones))
+                case "stop":
+                    tmp = asyncio.create_task(self.action_stop(args.drones))
+                case "kill":
+                    if not args.drones:
+                        if self._kill_counter:
+                            tmp = asyncio.create_task(self.dm.kill(args.drones))
+                        else:
+                            self.logger.warning("Are you sure? Enter kill again")
+                            self._kill_counter += 1
                     else:
-                        self.logger.warning("Are you sure? Enter kill again")
-                        self._kill_counter += 1
-                else:
-                    tmp = asyncio.create_task(self.dm.kill(args.drones))
-            elif args.command == "qualify":
-                tmp = asyncio.create_task(self.qualify(args.drones, args.altitude))
+                        tmp = asyncio.create_task(self.dm.kill(args.drones))
 
-            elif args.command == "rc-add":
-                self.rc_add_drones(args.drones)
-            elif args.command == "rc-rm":
-                self.rc_remove_drones(args.drones)
-            elif args.command == "rc-stage":
-                tmp = asyncio.create_task(self.stages(args.stage))
+                case "qualify":
+                    tmp = asyncio.create_task(self.qualify(args.drones, args.altitude))
+                case "rc-add":
+                    self.rc_add_drones(args.drones)
+                case "rc-rm":
+                    self.rc_remove_drones(args.drones)
+                case "rc-stage":
+                    tmp = asyncio.create_task(self.stages(args.stage))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
@@ -372,7 +373,7 @@ class CommandScreen(Screen):
         cur_pos = self.dm.drones[name].position_ned
         x, y, z = cur_pos
         try:
-            drone = self.dm.drones[name]
+            drone: DroneMAVSDK = self.dm.drones[name]
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
             return
@@ -383,12 +384,12 @@ class CommandScreen(Screen):
             await asyncio.sleep(2)
         ############
             self.logger.info("Big move forward 5m")
-            await drone.set_waypoint_ned(np.asarray([5+x, y, -altitude, 0], dtype=float))
+            await drone.set_setpoint_pos_ned(np.asarray([5 + x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
-            await drone.set_waypoint_ned(np.asarray([0+x, y, -altitude, 0], dtype=float))
+            await drone.set_setpoint_pos_ned(np.asarray([0 + x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(9)
         #############
-            await drone.set_waypoint_ned(np.asarray([5+x, y, -altitude, 0], dtype=float))
+            await drone.set_setpoint_pos_ned(np.asarray([5 + x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
             self.logger.info("Turning, rate 10deg/2, 10Hz")
             await drone.spin_at_rate(10, 36, "cw")
@@ -397,7 +398,7 @@ class CommandScreen(Screen):
             await drone.spin_at_rate(30, 12, "cw")
             await asyncio.sleep(2)
         #############
-            await drone.set_waypoint_ned(np.asarray([0+x, y, -altitude, 0], dtype=float))
+            await drone.set_setpoint_pos_ned(np.asarray([0 + x, y, -altitude, 0], dtype=float))
             await asyncio.sleep(7)
             await self.dm.land([name])
         except Exception as e:
@@ -537,12 +538,12 @@ class DroneApp(App):
 
 
 if __name__ == "__main__":
-    start_parser = argparse.ArgumentParser()
-    start_parser.add_argument("-d", "--dummy", action="store_true", help="If set, use a dummy drone class")
+    #start_parser = argparse.ArgumentParser()
+    #start_parser.add_argument("-d", "--dummy", action="store_true", help="If set, use a dummy drone class")
 
-    start_args = start_parser.parse_args()
+    #start_args = start_parser.parse_args()
 
-    drone_type = DummyMAVDrone if start_args.dummy else DroneMAVSDK
+    drone_type = DroneMAVSDK
     drone_manager = DroneManager(drone_type)
     app = DroneApp(drone_manager, logger=drone_manager.logger)
     app.run()

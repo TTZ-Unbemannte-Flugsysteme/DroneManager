@@ -4,7 +4,6 @@ import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
 from typing import Dict
-import numpy as np
 import random
 
 from drones import Drone, parse_address
@@ -178,10 +177,9 @@ class DroneManager:
             self.drones[name].resume()
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.5, schedule=True):
-        point = np.array([x, y, z, yaw])
-        self.logger.info(f"Queueing move to {point} for {name}.")
+        self.logger.info(f"Queueing move to {x, y, z, yaw} for {name}.")
         try:
-            coro = self.drones[name].fly_to_point(point, tolerance=tol)
+            coro = self.drones[name].fly_to(x=x, y=y, z=z, yaw=yaw, tolerance=tol)
             if schedule:
                 result = self.drones[name].schedule_task(coro)
             else:
@@ -191,11 +189,12 @@ class DroneManager:
             self.logger.warning(f"No drone named {name}!")
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
         self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
         try:
-            coro = self.drones[name].fly_to_gps(lat, long, alt, yaw, tolerance=tol)
+            coro = self.drones[name].fly_to(lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
             result = self.drones[name].schedule_task(coro)
             await result
         except KeyError:

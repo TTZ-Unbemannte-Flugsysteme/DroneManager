@@ -3,7 +3,7 @@ import datetime
 from collections import deque
 import math
 import os.path
-import random
+from enum import Enum, auto
 import threading
 import haversine
 import platform
@@ -19,7 +19,7 @@ from typing import Dict, Deque, Tuple
 from mavsdk import System
 from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
-from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, OffboardError
+from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
 
 from mavpassthrough import MAVPassthrough
@@ -61,9 +61,19 @@ class Battery:
         return f"Remain: {self.remaining}   Consumed: {self.consumed}   V: {self.voltage}   T: {self.temperature}"
 
 
+class SetPointType(Enum):
+    # Type of setpoint              # Expected data structure
+    POS_NED = auto()                # array [pos_n, pos_e, pos_d, yaw]
+    POS_VEL_NED = auto()            # array [pos_n, pos_e, pos_d, vel_n, vel_e, vel_d, yaw]
+    POS_VEL_ACC_NED = auto()        # array [pos_n, pos_e, pos_d, vel_n, vel_e, vel_d, acc_n, acc_e, acc_d, yaw]
+    VEL_NED = auto()                # array [vel_n, vel_e, vel_d, yaw]
+    POS_GLOBAL = auto()             # array [lat, long, amsl, yaw]
+
+
 class Drone(ABC, threading.Thread):
 
-    VALID_FLIGHTMODES = []
+    VALID_FLIGHTMODES = set()
+    VALID_SETPOINT_TYPES = set()
 
     def __init__(self, name, *args, log_to_file=True, **kwargs):
         threading.Thread.__init__(self)
@@ -180,6 +190,10 @@ class Drone(ABC, threading.Thread):
     @property
     @abstractmethod
     def position_global(self) -> np.ndarray:
+        """
+
+        :return: Array with the GPS coordinates [latitude, longitude, AMSL]
+        """
         pass
 
     @property
@@ -216,10 +230,11 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def takeoff(self, altitude=-2.0) -> bool:
-        """
+        """ Takes off to the specified altitude.
 
-        Note that altitude is negative for up.
-        :param altitude:
+        Note that negative for up, i.e. the altitude should be -2 to take off to 2m above ground.
+
+        :param altitude: Takeoff altitude above.
         :return:
         """
         pass
@@ -228,19 +243,27 @@ class Drone(ABC, threading.Thread):
     async def change_flight_mode(self, flightmode) -> bool:
         pass
 
-    @abstractmethod
-    async def set_waypoint_ned(self, point) -> bool:
-        pass
-
     def is_at_pos(self, target_pos, tolerance=0.25) -> bool:
+        """
+
+        :param target_pos: Array with target position. If a yaw is also passed (i.e. array length 4), it is ignored.
+        :param tolerance: How close we have to be to the target position to be considered "at" it.
+        :return:
+        """
         cur_pos = self.position_ned
         if dist_ned(cur_pos, target_pos[:3]) < tolerance:
             return True
         return False
 
-    def is_at_heading(self, target_heading, tolerance=2) -> bool:
+    def is_at_heading(self, target_heading, tolerance=1) -> bool:
         cur_heading = self.attitude[2]
         if abs(cur_heading - target_heading) < tolerance:
+            return True
+        return False
+
+    def is_at_gps(self, target_lat, target_long, target_amsl, tolerance=0.25) -> bool:
+        cur_lat, cur_long, cur_asml, cur_atl = self.position_global
+        if dist_gps(target_lat, target_long, target_amsl, cur_lat, cur_long, cur_asml) < tolerance:
             return True
         return False
 
@@ -253,11 +276,7 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def fly_to_point(self, point: np.ndarray, tolerance=0.5) -> bool:
-        pass
-
-    @abstractmethod
-    async def fly_to_gps(self, latitude, longitude, altitude, yaw, tolerance=0.5) -> bool:
+    async def fly_to(self, x=None, y=None, z=None, lat=None, long=None, amsl=None, yaw=None, tolerance=0.25):
         pass
 
     @abstractmethod
@@ -341,10 +360,15 @@ def parse_address(string=None, scheme=None, host=None, port=None, return_string=
 
 class DroneMAVSDK(Drone):
 
-    VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff", "position", "altitude"]
+    VALID_FLIGHTMODES = {"hold", "offboard", "return", "land", "takeoff", "position", "altitude"}
     # This attribute is for checking which flight modes can be changed into manually
-    TAKEOFF_THRESH = 0.3
-    # Maximum distance between current position and (0,0), where takeoff happens
+    VALID_SETPOINT_TYPES = {SetPointType.POS_NED,
+                            SetPointType.POS_VEL_NED,
+                            SetPointType.POS_VEL_ACC_NED,
+                            SetPointType.VEL_NED,
+                            SetPointType.POS_GLOBAL}
+    # What type of trajectory setpoints this classes fly_<> commands can follow. This limits what Trajectory generators
+    # can be used.
 
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=190):
         Drone.__init__(self, name)
@@ -369,6 +393,7 @@ class DroneMAVSDK(Drone):
 
         self._max_position_discontinuity = - math.inf
         self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
+        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
 
     def __del__(self):
         self.system.__del__()
@@ -456,7 +481,9 @@ class DroneMAVSDK(Drone):
                 self._passthrough.connect_gcs(passthrough_gcs_string)
 
                 while not self._passthrough.connected_to_drone() or not self._passthrough.connected_to_gcs():
-                    self.logger.debug(f"Waiting on passthrough to connect. Drone: {self._passthrough.connected_to_drone()}, GCS: {self._passthrough.connected_to_gcs()}")
+                    self.logger.debug(f"Waiting on passthrough to connect. "
+                                      f"Drone: {self._passthrough.connected_to_drone()}, "
+                                      f"GCS: {self._passthrough.connected_to_gcs()}")
                     await asyncio.sleep(0.1)
                 self.logger.debug("Connected passthrough!")
 
@@ -572,25 +599,34 @@ class DroneMAVSDK(Drone):
                 self.logger.error(f"{message.text}")
 
     async def arm(self):
-        timeout = 2
+        timeout = 5
         self.logger.info("Arming!")
         await super().arm()
         result = await self._action_error_wrapper(self.system.action.arm)
         if result and not isinstance(result, Exception):
+            start_time = time.time()
             while not self.is_armed:
                 await asyncio.sleep(1 / self._position_update_freq)
+                if time.time() - start_time > timeout:
+                    self.logger.warning("Arming timed out!")
+                    return False
             self.logger.info("Armed!")
         else:
             self.logger.warning("Couldn't arm!")
         return result
 
     async def disarm(self):
+        timeout = 5
         self.logger.info("Disarming!")
         await super().disarm()
         result = await self._action_error_wrapper(self.system.action.disarm)
         if result and not isinstance(result, Exception):
+            start_time = time.time()
             while self.is_armed:
                 await asyncio.sleep(1 / self._position_update_freq)
+                if time.time() - start_time > timeout:
+                    self.logger.warning("Disarming timed out!")
+                    return False
             self.logger.info("Disarmed!")
         else:
             self.logger.warning("Couldn't disarm!")
@@ -638,13 +674,12 @@ class DroneMAVSDK(Drone):
         self._can_takeoff()
         target_pos_yaw = self._get_pos_ned_yaw()
         target_pos_yaw[2] = altitude
-        await self.set_waypoint_ned(target_pos_yaw)
+        await self.set_setpoint_pos_ned(target_pos_yaw)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         self.logger.info("Taking off!")
         while True:
-            cur_pos = self.position_ned
-            if dist_ned(cur_pos, target_pos_yaw[:3]) < tolerance:
+            if self.is_at_pos(target_pos_yaw, tolerance=tolerance):
                 self.logger.info(f"Takeoff completed!")
                 return True
             await asyncio.sleep(1 / self._position_update_freq)
@@ -676,18 +711,37 @@ class DroneMAVSDK(Drone):
             self.logger.warning("Couldn't change flight mode!")
         return result
 
-    async def set_waypoint_ned(self, point):
+    async def set_setpoint_pos_ned(self, setpoint):
         # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
-        point_ned_yaw = PositionNedYaw(*point)
-        await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
-        return True
+        point_ned_yaw = PositionNedYaw(*setpoint)
+        return await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
 
-    async def _set_setpoint_gps(self, latitude, longitude, alt_rel, yaw):
+    async def set_setpoint_pos_vel_ned(self, setpoint):
+        point_ned_yaw = PositionNedYaw(*setpoint[:3], setpoint[-1])
+        velocity_ned_yaw = VelocityNedYaw(*setpoint[3:])
+        return await self._offboard_error_wrapper(self.system.offboard.set_position_velocity_ned,
+                                                  point_ned_yaw, velocity_ned_yaw)
+
+    async def set_setpoint_pos_vel_acc_ned(self, setpoint):
+        yaw = setpoint[-1]
+        point_ned_yaw = PositionNedYaw(*setpoint[:3], yaw)
+        velocity_ned_yaw = VelocityNedYaw(*setpoint[3:6], yaw)
+        acc_ned = AccelerationNed(*setpoint[6:9])
+        return await self._offboard_error_wrapper(self.system.offboard.set_position_velocity_acceleration_ned,
+                                                  point_ned_yaw,
+                                                  velocity_ned_yaw,
+                                                  acc_ned)
+
+    async def set_setpoint_vel_ned(self, setpoint):
+        vel_yaw = VelocityNedYaw(*setpoint)
+        return await self._offboard_error_wrapper(self.system.offboard.set_velocity_ned, vel_yaw)
+
+    async def set_setpoint_gps(self, setpoint):
+        latitude, longitude, amsl, yaw = setpoint
         alt_type = PositionGlobalYaw.AltitudeType.AMSL
-        position = PositionGlobalYaw(lat_deg=latitude, lon_deg=longitude, alt_m=alt_rel,
+        position = PositionGlobalYaw(lat_deg=latitude, lon_deg=longitude, alt_m=amsl,
                                      yaw_deg=yaw, altitude_type=alt_type)
-        await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
-        return True
+        return await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
 
     def _can_do_in_air_commands(self):
         if not self.is_armed or not self.in_air:
@@ -707,8 +761,8 @@ class DroneMAVSDK(Drone):
         :return:
         """
         # Add 180, take modulo 360 and subtract 180 to get proper range
-        dif_yaw = math.fmod(target_yaw - self.attitude[2] + 180, 360) - 180
         og_yaw = self.attitude[2]
+        dif_yaw = (target_yaw - og_yaw + 180) % 360 - 180
         time_required = abs(dif_yaw / yaw_rate)
         n_steps = math.ceil(time_required*self._position_update_freq)
         step_size = dif_yaw/n_steps
@@ -716,7 +770,7 @@ class DroneMAVSDK(Drone):
         for i in range(n_steps):
             if not self.is_paused:
                 pos_yaw[3] = og_yaw + step_size*(i+1)
-                await self.set_waypoint_ned(pos_yaw)
+                await self.set_setpoint_pos_ned(pos_yaw)
             await asyncio.sleep(1/self._position_update_freq)
         return self.is_at_heading(target_heading=target_yaw, tolerance=tolerance)
 
@@ -741,62 +795,99 @@ class DroneMAVSDK(Drone):
         for i in range(n_steps):
             if not self.is_paused:
                 pos_yaw[3] = step_size*(i+1)
-                await self.set_waypoint_ned(pos_yaw)
+                await self.set_setpoint_pos_ned(pos_yaw)
             await asyncio.sleep(1/freq)
 
-    async def fly_to_point(self, target_pos: np.ndarray, tolerance=0.25, put_into_offboard=True):
-        self.logger.info(f"Flying to {target_pos} with tolerance {tolerance}m")
-        cur_paused = False
-        await super().fly_to_point(target_pos, tolerance)
-        # Do set_setpoint, but also put into offboard mode if we are not already in it?
+    async def fly_to(self, x=None, y=None, z=None,
+                     lat=None, long=None, amsl=None, yaw=None,
+                     tolerance=0.25, put_into_offboard=True):
+        """ Fly to a specified point in offboard mode.
+
+        If both GPS and local coordinates are provided we use the GPS coordinates and local coordinates are ignored.
+
+        :param x:
+        :param y:
+        :param z:
+        :param lat:
+        :param long:
+        :param amsl:
+        :param yaw:
+        :param tolerance:
+        :param put_into_offboard:
+        :return:
+        """
+        # Check that we have one full set of coordinates and are in a flyable state
         self._can_do_in_air_commands()
-        await self.set_waypoint_ned(target_pos)
+        assert ((x is not None and y is not None and z is not None)
+                or (lat is not None, long is not None, amsl is not None)), \
+            "Must provide a full set of either NED or GPS coordinates!"
+
+        # Check that we have a trajectory generator whose output we can process
+        assert self.trajectory_gen is not None and self.trajectory_gen.setpoint_type in self.VALID_SETPOINT_TYPES
+
+        # Use GPS if GPS coordinates are provided
+        use_gps = lat is not None and long is not None and amsl is not None
+
+        # Maintain current yaw if no yaw is provided
+        if yaw is None:
+            yaw = self.attitude[2]
+
+        if use_gps:
+            self.logger.info(f"Flying to Lat: {lat} Long: {long} AMSL: {amsl} facing {yaw} with tolerance {tolerance}")
+            cur_lat, cur_long, cur_amsl, cur_atl = self.position_global
+            cur_yaw = self.attitude[2]
+            await self.set_setpoint_gps([cur_lat, cur_long, cur_amsl, cur_yaw])
+        else:
+            self.logger.info(f"Flying to N: {x} E: {y} D: {z} facing {yaw} with tolerance {tolerance}")
+            cur_pos_yaw = np.zeros((4,))
+            cur_pos_yaw[:3] = self.position_ned
+            cur_pos_yaw[3] = self.attitude[2]
+            await self.set_setpoint_pos_ned(cur_pos_yaw)
+
         if put_into_offboard and self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
+
+        if use_gps:
+            if not self.trajectory_gen.CAN_DO_GPS:
+                raise RuntimeError("Trajectory generator can't use GPS coordinates!")
+            self.trajectory_gen.use_gps = True
+            self.trajectory_gen.set_target(np.asarray([lat, long, amsl, yaw]))
+        else:
+            self.trajectory_gen.use_gps = False
+            self.trajectory_gen.set_target(np.asarray([x, y, z, yaw]))
+
         while True:
-            if self.is_paused and not cur_paused:
-                cur_paused = True
-                cur_pos_yaw = np.zeros((4,))
-                cur_pos_yaw[:3] = self.position_ned
-                cur_pos_yaw[3] = self.attitude[2]
-                self.logger.debug(f"Pausing flyto command, cur pos: {cur_pos_yaw}")
-                await self.set_waypoint_ned(cur_pos_yaw)
-            elif cur_paused and not self.is_paused:
-                cur_paused = False
-                self.logger.debug("Unpausing flyto command")
-                await self.set_waypoint_ned(target_pos)
-            elif not self.is_paused and not cur_paused:
-                if self.is_at_pos(target_pos[:3], tolerance=tolerance) and self.is_at_heading(target_pos[3], tolerance=2):
+            if not self.is_paused:
+                # Get and set a new setpoint to go to
+                setpoint = self.trajectory_gen.next_setpoint()
+                # Set appropriate setpoint
+                match self.trajectory_gen.setpoint_type:
+                    case SetPointType.POS_NED:
+                        await self.set_setpoint_pos_ned(setpoint)
+                    case SetPointType.POS_VEL_NED:
+                        await self.set_setpoint_pos_vel_ned(setpoint)
+                    case SetPointType.POS_VEL_ACC_NED:
+                        await self.set_setpoint_pos_vel_acc_ned(setpoint)
+                    case SetPointType.VEL_NED:
+                        await self.set_setpoint_vel_ned(setpoint)
+                    case SetPointType.POS_GLOBAL:
+                        await self.set_setpoint_gps(setpoint)
+                    case _:
+                        raise RuntimeError(f"Invalid generator setpoint type {self.trajectory_gen.setpoint_type}! Must "
+                                           f"be one of {self.VALID_SETPOINT_TYPES}")
+
+                # Check if we have arrived at target waypoint
+                if use_gps:
+                    reached = (self.is_at_gps(lat, long, amsl, tolerance=tolerance)
+                               and self.is_at_heading(yaw, tolerance=1))
+                else:
+                    reached = self.is_at_pos([x, y, z], tolerance=tolerance) and self.is_at_heading(yaw, tolerance=1)
+                    
+                # Print message and stop if we have reached waypoint
+                if reached:
                     self.logger.info("Reached target position!")
                     return True
             await asyncio.sleep(1/self._position_update_freq)
-
-    async def fly_to_gps(self, latitude, longitude, amsl, yaw, tolerance=0.5):
-        self.logger.info(f"Flying to {latitude, longitude, amsl, yaw} with tolerance {tolerance}m")
-        cur_paused = False
-        await super().fly_to_gps(latitude, longitude, amsl, yaw=yaw, tolerance=tolerance)
-        self._can_do_in_air_commands()
-        await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
-        while True:
-            if self.is_paused and not cur_paused:
-                cur_paused = True
-                cur_lat = self.position_global[0]
-                cur_long = self.position_global[0]
-                cur_amsl = self.position_global[0]
-                cur_yaw = self.attitude[2]
-                self.logger.debug(f"Pausing flytogps command, current position: {cur_lat, cur_long, cur_amsl, cur_yaw}")
-                await self._action_error_wrapper(self.system.action.goto_location,
-                                                 cur_lat, cur_long, cur_amsl, cur_yaw)
-            elif cur_paused and not self.is_paused:
-                cur_paused = False
-                self.logger.debug("Unpausing flytogps command")
-                await self._action_error_wrapper(self.system.action.goto_location, latitude, longitude, amsl, yaw)
-            elif not self.is_paused and not cur_paused:
-                lat1, long1, alt1 = self.position_global[:3]
-                if dist_gps(lat1, long1, alt1, latitude, longitude, amsl) < tolerance:
-                    self.logger.info(f"Arrived at {(latitude, longitude, amsl)}")
-                    return True
-            await asyncio.sleep(1 / self._position_update_freq)
 
     async def orbit(self, radius, velocity, center_lat, center_long, amsl):
         await super().orbit(radius, velocity, center_lat, center_long, amsl)
@@ -820,7 +911,7 @@ class DroneMAVSDK(Drone):
         start_time = time.time()
         target_pos = self._get_pos_ned_yaw()
         target_pos[2] += 0.1
-        await self.set_waypoint_ned(target_pos)
+        await self.set_setpoint_pos_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
         update_freq = 2
@@ -837,7 +928,7 @@ class DroneMAVSDK(Drone):
             old_pos = cur_pos.copy()
             cur_alt = self.position_ned[2]
             target_pos[2] = cur_alt + 0.5
-            await self.set_waypoint_ned(target_pos)
+            await self.set_setpoint_pos_ned(target_pos)
             await asyncio.sleep(1/update_freq)
         self.logger.info("Landed!")
         return True
@@ -910,123 +1001,117 @@ class DroneMAVSDK(Drone):
         return True
 
 
-class DummyMAVDrone(Drone):
+class TrajectoryGenerator(ABC):
 
-    VALID_FLIGHTMODES = ["hold", "offboard", "return", "land", "takeoff"]
+    CAN_DO_GPS = False
+    SETPOINT_TYPES = set()
 
-    def __init__(self, name, mavsdk_server_address: str = "localhost", mavsdk_server_port: int = 50050):
-        super().__init__(name)
-        _, self.server_addr, self.server_port = parse_address(scheme="udp", host=mavsdk_server_address,
-                                                              port=mavsdk_server_port)
-        self._is_connected = False
-        self._is_armed = False
-        self._flightmode = None
-        self._in_air = False
-        asyncio.create_task(self._fail_offboard())
+    def __init__(self, drone: Drone, dt, use_gps=False, setpointtype: SetPointType = None):
+        assert setpointtype in self.SETPOINT_TYPES, (f"Invalid setpoint type {setpointtype} "
+                                                     f"for trajectory generator {self.__class__.__name__}")
+        self.drone = drone
+        self.dt = dt
+        self.use_gps = use_gps
+        self.setpoint_type = setpointtype
+        self.target_position: np.ndarray | None = None
 
-    @property
-    def is_connected(self):
-        return self._is_connected
+    def set_target(self, point: np.ndarray):
+        """ Sets the target position that we will try to fly towards.
 
-    @property
-    def is_armed(self):
-        return self._is_armed
+        :param point: Target waypoint. Should be an array with shape (4,), where the first three entries are the
+            position (FRD, NED or LAT/LONG/AMSL) and the last is the target yaw
+        :return:
+        """
+        self.target_position = point
 
-    @property
-    def flightmode(self):
-        return self._flightmode
+    @abstractmethod
+    def next_setpoint(self) -> np.ndarray:
+        pass
 
-    @property
-    def in_air(self):
-        return self._in_air
 
-    async def _fail_offboard(self):
-        while True:
-            until_next = random.uniform(10, 15)
-            duration = random.uniform(3, 5)
-            if self.flightmode == "OFFBOARD":
-                self._flightmode = "HOLD"
-                await asyncio.sleep(duration)
-                await self.change_flight_mode("offboard")
-            await asyncio.sleep(until_next)
+class StaticWaypoints(TrajectoryGenerator):
+    """ Simply sends the target waypoint as static setpoints.
+    """
 
-    async def connect(self, drone_addr):
-        drone_address = parse_address(string=drone_addr, return_string=True)
-        self.drone_addr = drone_address
-        con_delay = random.uniform(1, 6)
-        con_success = random.uniform(0, 1)
-        con_success_rate = 0.8
-        await asyncio.sleep(con_delay)
-        if con_success < con_success_rate:
-            self._is_connected = True
-            return True
+    CAN_DO_GPS = True
+    SETPOINT_TYPES = {SetPointType.POS_NED, SetPointType.POS_GLOBAL}
+
+    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_NED):
+        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+
+    def next_setpoint(self) -> np.ndarray:
+        if self.use_gps:
+            self.setpoint_type = SetPointType.POS_GLOBAL
+        return self.target_position
+
+
+class DirectFlightFacingForward(TrajectoryGenerator):
+    """ Flies directly toward the waypoint facing towards it along the way. Turning towards the target yaw happens
+    after we reach the waypoint. Control happens only through velocity setpoints.
+    """
+    # TODO: Implement GPS
+    # TODO: Figure out better way to handle yaw rate
+
+    SETPOINT_TYPES = {SetPointType.VEL_NED}
+    CAN_DO_GPS = False
+
+    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.VEL_NED,
+                 max_vel_h=1.0, max_vel_z=0.5, max_acc_h=0.5, max_acc_z=0.25, max_yaw_rate=20, ):
+        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+        self.max_vel_h = max_vel_h
+        self.max_vel_z = max_vel_z
+        self.max_acc_h = max_acc_h
+        self.max_acc_z = max_acc_z
+        self.max_yaw_rate = max_yaw_rate
+
+        self.fudge_yaw = 1#2.5
+        self.fudge_xy = 1#8
+        self.fudge_z = 1
+
+    def next_setpoint(self):
+        """ Always move towards target. Accelerates if we are slower than the max speed and have space to accelerate,
+        keep speed if we are at max velocity and still some distance away from target, decelerate when we approach
+        target.
+
+        :return:
+        """
+        # Yaw
+        target_yaw = self.target_position[3]
+        if self.drone.is_at_pos(self.target_position[:3], tolerance=1):
+            temp_yaw_target = target_yaw
         else:
-            return False
-
-    async def arm(self):
-        await asyncio.sleep(random.uniform(0.1, 1))
-        if self.is_armed:
-            return False
-        self._is_armed = True
-        return True
-
-    async def disarm(self):
-        await asyncio.sleep(random.uniform(0.1, 1))
-        if self.is_armed:
-            self._is_armed = False
-            return True
-        return False
-
-    async def takeoff(self):
-        if not self.is_armed:
-            raise RuntimeError("Can't takeoff while disarmed!")
-        if self.in_air:
-            raise RuntimeError("Already in the air!")
-        self._flightmode = "TAKEOFF"
-        self._in_air = True
-        await asyncio.sleep(random.uniform(1, 3))
-        return True
-
-    async def change_flight_mode(self, flightmode):
-        await asyncio.sleep(random.uniform(0.1, 3))
-        if flightmode == "hold":
-            self._flightmode = "HOLD"
-        elif flightmode == "offboard":
-            self._flightmode = "OFFBOARD"
-        elif flightmode == "return":
-            self._flightmode = "RTB"
-        elif flightmode == "land":
-            await self.land()
-        elif flightmode == "takeoff":
-            await self.takeoff()
+            temp_yaw_target = math.atan2(self.target_position[1] - self.drone.position_ned[1],
+                                         self.target_position[0] - self.drone.position_ned[0]) / math.pi * 180
+        cur_yaw = self.drone.attitude[2]
+        dif_yaw = (temp_yaw_target - cur_yaw + 180) % 360 - 180
+        step_size = self.max_yaw_rate * self.dt * self.fudge_yaw
+        if abs(dif_yaw) < step_size:
+            yaw = temp_yaw_target
         else:
-            raise KeyError(f"{flightmode} is not a valid flightmode!")
-        return True
+            if dif_yaw > 0:
+                yaw = cur_yaw + step_size
+            else:
+                yaw = cur_yaw - step_size
 
-    async def fly_to_point(self, point: np.ndarray, tolerance=0.5):
-        await asyncio.sleep(random.uniform(1, 10))
-        if not self.is_armed:
-            raise RuntimeError("Can't fly an unarmed drone!")
-        return True
+        # Vertical movement
+        cur_z = self.drone.position_ned[2]
+        cur_speed_z = abs(self.drone.velocity[2])
+        dist_z = abs(self.target_position[2] - cur_z)
+        speed_z_lim = min(math.sqrt(abs(2 * self.max_acc_z * dist_z)), self.max_vel_z)
+        speed_z = min(cur_speed_z + self.max_acc_z * self.dt * self.fudge_z, speed_z_lim)
+        vel_z = speed_z if self.target_position[2] - cur_z > 0 else -speed_z
 
-    async def land(self):
-        if not self.is_armed:
-            raise RuntimeError("Can't land an unarmed drone!")
-        if not self.in_air:
-            raise RuntimeError("Already landed!")
-        self._flightmode = "LAND"
-        await asyncio.sleep(random.uniform(3, 10))
-        self._in_air = False
-        return True
+        # Horizontal
+        cur_xy = self.drone.position_ned[:2]
+        dist_xy = dist_ned(self.target_position[:2], cur_xy)
+        cur_vel_xy = self.drone.velocity[:2]
+        cur_speed_xy = np.sqrt(cur_vel_xy.dot(cur_vel_xy))
+        dist_xy_v = self.target_position[:2] - cur_xy
+        speed_xy_limit = min(math.sqrt(abs(2 * self.max_acc_h * dist_xy)), self.max_vel_h)
+        speed_xy = min(cur_speed_xy + self.max_acc_h * self.dt * self.fudge_xy, speed_xy_limit)
+        dir_xy = math.atan2(dist_xy_v[1], dist_xy_v[0])
+        vel_x = math.cos(dir_xy) * speed_xy
+        vel_y = math.sin(dir_xy) * speed_xy
 
-    async def stop(self):
-        await self.land()
-        while self.in_air:
-            await asyncio.sleep(0.1)
-        return True
-
-    async def kill(self):
-        self._is_connected = False
-        self._is_armed = False
-        self._in_air = False
-        self._flightmode = None
+        vel_yaw_setpoint = np.asarray([vel_x, vel_y, vel_z, yaw])
+        return vel_yaw_setpoint
