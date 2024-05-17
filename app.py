@@ -16,9 +16,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, ProgressBar
 from textual.widget import Widget
 
-from widgets import InputWithHistory, TextualLogHandler, DroneOverview
+from widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
 from drones import DroneMAVSDK
-from betterparser import ArgParser, ArgumentParserError
 
 import logging
 
@@ -105,30 +104,23 @@ Bar {
                 pass
 
     async def _add_drone(self, name, drone):
-        try:
-            self.logger.debug(f"Adding radio button for {name}")
-            radio_selector = RadioButton(f"{name}", id=f"button_{name}")
-            radio_field = self.query_one("#droneselector", expect_type=RadioSet)
-            await radio_field.mount(radio_selector)
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
+        self.logger.debug(f"Adding radio button for {name}")
+        radio_selector = RadioButton(f"{name}", id=f"button_{name}")
+        radio_field = self.query_one("#droneselector", expect_type=RadioSet)
+        await radio_field.mount(radio_selector)
 
     async def _remove_drone(self, name):
+        if self.cur_drone is not None and self.cur_drone.name == name:
+            # Have to change current drone to prevent stuff breaking
+            self.cur_drone = None
         try:
-            if self.cur_drone is not None and self.cur_drone.name == name:
-                # Have to change current drone to prevent stuff breaking
-                self.cur_drone = None
-            try:
-                self.logger.debug(f"Removing radio button for {name}")
-                await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
-                # Move currently selected button after removal to prevent index errors
-                selector = self.query_one(f"#droneselector", expect_type=RadioSet)
-                selector.action_next_button()
-            except textual.css.query.NoMatches:
-                pass
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
-            raise
+            self.logger.debug(f"Removing radio button for {name}")
+            await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
+            # Move currently selected button after removal to prevent index errors
+            selector = self.query_one(f"#droneselector", expect_type=RadioSet)
+            selector.action_next_button()
+        except textual.css.query.NoMatches:
+            pass
 
 
 class CommandScreen(Screen):
@@ -266,7 +258,7 @@ class CommandScreen(Screen):
         rc_remove_parser = subparsers.add_parser("rc-rm", help="Remove drone(s) from the redcross demo")
         rc_remove_parser.add_argument("drones", type=str, nargs="+", help="Drones to remove.")
 
-        rc_stage_parser = subparsers.add_parser("rc-stage", help="Perform stage 1 with the current drones")
+        rc_stage_parser = subparsers.add_parser("rc-stage", help="Perform a stage with the current drones")
         rc_stage_parser.add_argument("stage", type=int,
                                      help="Which stage to execute. Must be consecutive to the previous stage")
 
@@ -348,7 +340,7 @@ class CommandScreen(Screen):
                         tmp = asyncio.create_task(self.dm.kill(args.drones))
 
                 case "qualify":
-                    tmp = asyncio.create_task(self.qualify(args.drones, args.altitude))
+                    self.qualify(args.drones, args.altitude)
                 case "rc-add":
                     self.rc_add_drones(args.drones)
                 case "rc-rm":

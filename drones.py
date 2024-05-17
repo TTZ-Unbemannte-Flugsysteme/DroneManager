@@ -770,12 +770,14 @@ class DroneMAVSDK(Drone):
                 pos_yaw[3] = og_yaw + step_size*(i+1)
                 await self.set_setpoint_pos_ned(pos_yaw)
             await asyncio.sleep(1/self._position_update_freq)
-        return self.is_at_heading(target_heading=target_yaw, tolerance=tolerance)
+        while not self.is_at_heading(target_heading=target_yaw, tolerance=tolerance):
+            await asyncio.sleep(1/self._position_update_freq)
+        return True
 
     async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
         """ Spin in place at the given rate for the given duration.
 
-        Pausable
+        Pausable.
 
         :param yaw_rate:
         :param duration:
@@ -1063,7 +1065,7 @@ class DirectFlightFacingForward(TrajectoryGenerator):
         self.max_yaw_rate = max_yaw_rate
 
         self.fudge_yaw = 1#2.5
-        self.fudge_xy = 1#8
+        self.fudge_xy = 1
         self.fudge_z = 1
 
     def next_setpoint(self):

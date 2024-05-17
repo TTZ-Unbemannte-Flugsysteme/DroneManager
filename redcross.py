@@ -91,7 +91,7 @@ class RedCross:
         # Returns a list with position_yaw coordinates for each drone
         forward = 4
         right = 0
-        altitudes = self.altitude_offsets()
+        altitudes = self.altitudes(waypoint.offset_altitudes)
         position_yaw_local_drones = [(waypoint.x + forward*i,
                                       waypoint.y + right*i,
                                       waypoint.z + altitudes[i],
@@ -109,7 +109,7 @@ class RedCross:
             indices = [4, 3, 0, 1, 2]
         circle_radius = 5  # Adjust radius size as needed
         angle_offset = 2*math.pi/len(self.drones)
-        altitudes = self.altitude_offsets()
+        altitudes = self.altitudes(waypoint.offset_altitudes)
         formation_offsets = [(circle_radius * math.sin(i*angle_offset),
                               circle_radius * math.cos(i*angle_offset),
                               altitudes[alt],
@@ -138,8 +138,11 @@ class RedCross:
                 drones_at_coordinates.append(False)
         return drones_at_coordinates
 
-    def altitude_offsets(self):
-        altitudes = [-self.altitude_step*i for i in range(self.max_alt_offset//self.altitude_step + 1)]
+    def altitudes(self, offset_altitudes):
+        if offset_altitudes:
+            altitudes = [-self.altitude_step*i for i in range(self.max_alt_offset//self.altitude_step + 1)]
+        else:
+            altitudes = [0 for _ in range(self.max_alt_offset//self.altitude_step + 1)]
         n_pattern = len(self.drones) // len(altitudes) + 1
         return altitudes*n_pattern  # Repeat the altitude pattern so that we have enough entries
 
@@ -179,7 +182,7 @@ class RedCross:
 
     async def stage_1(self):
         self.logger.info(f"Starting stage 1 with {self.current_drone_list()}")
-        takeoff_offsets = self.altitude_offsets()
+        takeoff_offsets = self.altitudes(offset_altitudes=True)
         try:
             results = await self.dm.arm(self.drones.keys(), schedule=True)
             for result in results:

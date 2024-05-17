@@ -72,6 +72,7 @@ class DroneManager:
             self.logger.info(repr(e))
             return False
         self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
+        drone = None
         async with self.drone_lock:
             try:
                 # Ensure that for each drone there is a one-to-one-to-one relation between name, mavsdk port and drone
@@ -97,14 +98,17 @@ class DroneManager:
                     connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
                 except (TimeoutError, CancelledError):
                     self.logger.warning(f"Connection attempts to {name} timed out!")
+                    await self._remove_drone_object(name, drone)
                     return False
                 except (OSError, socket.gaierror) as e:
                     self.logger.info(f"Address error, probably due to invalid address")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 except AssertionError as e:
                     self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 if connected:
                     self.logger.info(f"Connected to {name}!")
@@ -113,16 +117,24 @@ class DroneManager:
                         try:
                             await asyncio.create_task(func(name, drone))
                         except Exception as e:
+                            self.logger.error(f"Failed post-connection process: {repr(e)}")
                             self.logger.debug(repr(e), exc_info=True)
+                            await self._remove_drone_object(name, drone)
+                            return False
                     return True
                 else:
                     self.logger.warning(f"Failed to connect to drone {name}!")
+                    await self._remove_drone_object(name, drone)
                     return False
             except (TimeoutError, CancelledError):
                 self.logger.warning(f"Connection attempts to {name} timed out!")
+                if drone is not None:
+                    await self._remove_drone_object(name, drone)
                 return False
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
+                if drone is not None:
+                    await self._remove_drone_object(name, drone)
                 return False
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
@@ -263,12 +275,13 @@ class DroneManager:
                 await asyncio.create_task(func(name))
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
-        try:
-            drone.should_stop.set()
-            drone.__del__()
-            del drone
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
+        if drone is not None:
+            try:
+                drone.should_stop.set()
+                drone.__del__()
+                del drone
+            except Exception as e:
+                self.logger.error(repr(e), exc_info=True)
 
     def add_remove_func(self, func):
         self._on_drone_removal_coros.add(func)
