@@ -2,7 +2,6 @@ import asyncio
 import datetime
 import os
 import shlex
-import numpy as np
 
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import Drone, DroneMAVSDK
@@ -195,8 +194,6 @@ class CommandScreen(Screen):
         offboard_parser.add_argument("mode", type=str, help="Target flight mode. Must be one of {}.".format(
             self.dm.drone_class.VALID_FLIGHTMODES))
         offboard_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to change flight mode on.")
-        #offboard_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-        #                                                                           "executing immediately.")
 
         fly_to_parser = subparsers.add_parser("flyto", help="Send the drone to a local coordinate.")
         fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
