@@ -6,7 +6,7 @@ import asyncio
 
 from pymavlink import mavutil
 
-from pymavlink.dialects.v20 import cubepilot
+from pymavlink.dialects.v10 import cubepilot
 
 formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -59,10 +59,51 @@ class MAVPassthrough:
         self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
         self.running_tasks.add(asyncio.create_task(self._listen_gcs()))
 
-    def connect_drone(self, ip, port):
-        self.running_tasks.add(asyncio.create_task(self._connect_drone(ip, port)))
+    def connect_drone(self, loc, appendix, scheme="udp"):
+        if scheme == "udp":
+            self.running_tasks.add(asyncio.create_task(self._connect_drone_udp(loc, appendix)))
+        elif scheme == "serial":
+            self.running_tasks.add(asyncio.create_task(self._connect_drone_serial(loc, appendix)))
 
-    async def _connect_drone(self, ip, port):
+    async def _connect_drone_serial(self, path, baud):
+        try:
+            self.logger.debug(f"Connecting to drone @{path}:{baud}")
+
+            tmp_con_drone_in = mavutil.mavlink_connection(f"{path}",
+                                                           baud=baud,
+                                                           source_system=self.source_system,
+                                                           source_component=self.source_component,
+                                                           dialect=self.dialect)
+
+            received_hb = 0
+            while received_hb < 3:
+                self.logger.debug("Sending initial drone heartbeat")
+                tmp_con_drone_in.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
+                                                     mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                                                     0, 0, 0)
+                await asyncio.sleep(0.1)
+                m = tmp_con_drone_in.wait_heartbeat(blocking=False)
+                if m is not None:
+                    if m.get_srcSystem() != self.source_system and m.get_srcComponent() != self.source_component:
+                        received_hb += 1
+                        self.logger.debug(f"Got drone heartbeat! Received {received_hb} total")
+                await asyncio.sleep(0.2)
+
+            tmp_con_drone_in.close()
+
+            self.con_drone_in = mavutil.mavlink_connection(f"{path}",
+                                                           baud=baud,
+                                                           source_system=self.source_system,
+                                                           source_component=self.source_component,
+                                                           dialect=self.dialect)
+
+            self.running_tasks.add(asyncio.create_task(self._send_pings_drone()))
+            self.running_tasks.add(asyncio.create_task(self._listen_drone()))
+            self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
+        except Exception as e:
+            self.logger.debug(f"Error during connection to drone: {repr(e)}", exc_info=True)
+
+    async def _connect_drone_udp(self, ip, port):
         try:
             self.logger.debug(f"Connecting to drone @{ip}:{port}")
 
@@ -99,9 +140,7 @@ class MAVPassthrough:
 
             self.running_tasks.add(asyncio.create_task(self._send_pings_drone()))
             self.running_tasks.add(asyncio.create_task(self._listen_drone()))
-
             self.running_tasks.add(asyncio.create_task(self._send_heartbeats_drone()))
-
         except Exception as e:
             self.logger.debug(f"Error during connection to drone: {repr(e)}", exc_info=True)
 
@@ -228,7 +267,7 @@ class MAVPassthrough:
 
 async def main():
     snoop = MAVPassthrough()
-    snoop.connect_drone(ip="192.168.1.37", port=14567)
+    snoop.connect_drone(loc="192.168.1.37", appendix=14567)
     snoop.connect_gcs("127.0.0.1:15567")
     while True:
         await asyncio.sleep(1)

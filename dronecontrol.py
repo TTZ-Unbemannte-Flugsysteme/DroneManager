@@ -66,12 +66,14 @@ class DroneManager:
                                drone_address: str,
                                timeout: float, compid=190):
         try:
-            _, parsed_addr, parsed_port = parse_address(string=drone_address)
-            parsed_connection_string = parse_address(string=drone_address, return_string=True)
+            scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
             self.logger.info(repr(e))
             return False
-        self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
+        if scheme == "serial":
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}")
+        else:
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}:{parsed_port}")
         drone = None
         async with self.drone_lock:
             try:

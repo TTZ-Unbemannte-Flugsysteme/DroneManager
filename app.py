@@ -32,10 +32,14 @@ DRONE_DICT = {
     "tycho":  "udp://192.168.1.34:14564",
     "gavin":  "udp://192.168.1.35:14565",
     "corran": "udp://192.168.1.36:14566",
-    "jaina":  "udp://192.168.1.37:14567"
+    "jaina":  "udp://192.168.1.37:14567",
+    "kira":   "serial://COM5:56700",
 }
 
 UPDATE_RATE = 20  # How often the various screens update in Hz
+
+
+# REQUIREMENTS: TEXTUAL, RICH, NUMPY, HAVERSINE, PYSERIAL, PYMAVLINK, MAVSDK-PYTHON
 
 
 class StatusScreen(Screen):

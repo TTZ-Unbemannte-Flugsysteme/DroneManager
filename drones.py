@@ -12,7 +12,7 @@ from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
 
 import numpy as np
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from typing import Dict, Deque, Tuple
 
@@ -33,6 +33,8 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
+# TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor
+# TODO: Consider how to determine mavlink dialect
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
 
@@ -327,33 +329,32 @@ class Drone(ABC, threading.Thread):
             self.current_action.cancel()
 
 
-def parse_address(string=None, scheme=None, host=None, port=None, return_string=False):
+def parse_address(string):
     """ Used to ensure that udp://:14540, udp://localhost:14540 and udp://127.0.0.1:14540 are recognized as equivalent.
 
     Missing elements from the string or the other entries are replaced with defaults. These are udp, empty host and
     50051 for the scheme, host and port, respectively.
     """
-    if string is None and scheme is None and host is None and port is None:
-        raise RuntimeError("Cant parse an address without either a url or a host/port pair!")
-    if string:
-        parse_drone_addr = urlparse(string)
-        scheme = parse_drone_addr.scheme
-        host = parse_drone_addr.hostname
-        port = parse_drone_addr.port
+    parse_drone_addr = urlparse(string)
+    scheme = parse_drone_addr.scheme
+    loc = parse_drone_addr.hostname
+    append = parse_drone_addr.port
     if scheme is None:
         scheme = "udp"
-    if host is None:
-        host = ""
-    elif host == "localhost":
-        host = ""
-    elif host == "127.0.0.1":
-        host = ""
-    if port is None:
-        port = 50051
-    if return_string:
-        return urlunparse((scheme, ":".join([host, str(port)]), "", "", "", ""))
-    else:
-        return scheme, host, port
+    if loc is None:
+        loc = ""
+    if loc == "localhost":
+        loc = ""
+    elif loc == "127.0.0.1":
+        loc = ""
+    if append is None:
+        append = 50051
+    if scheme == "serial":
+        loc = parse_drone_addr.path
+        if loc == "":
+            loc = parse_drone_addr.netloc
+        loc, append = loc.split(":")
+    return scheme, loc, append
 
 
 class DroneMAVSDK(Drone):
@@ -390,7 +391,14 @@ class DroneMAVSDK(Drone):
         self._position_update_freq = 10                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
-        self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
+        # Can't use passthrough if we already have a mavsdk server running:
+        if self.server_addr is not None:
+            self._passthrough = None
+        else:
+            dialect = "cubepilot"
+            if name == "kira":
+                dialect = "ardupilotmega"
+            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
         self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
 
     def __del__(self):
@@ -443,16 +451,23 @@ class DroneMAVSDK(Drone):
 
     async def connect(self, drone_address) -> bool:
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
-        scheme, ip, port = parse_address(string=drone_address, return_string=False)
-        assert scheme == "udp"
-        self.drone_addr = f"{scheme}://{ip}:{port}"
+        # If we use serial, loc is the path and appendix the baudrate, if we use udp it is IP and port
+        scheme, loc, appendix = parse_address(string=drone_address)
+        self.drone_addr = f"{scheme}://{loc}:{appendix}"
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
         if self._passthrough:
-            mavsdk_passthrough_port = port + 1000
+            if scheme == "serial":
+                mavsdk_passthrough_port = 14531
+                mavsdk_passthrough_string = f"udp://:{mavsdk_passthrough_port}"  # TODO: Pick a random port until we get a free one
+            else:
+                mavsdk_passthrough_port = appendix + 1000
+                mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
+            passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
         else:
-            mavsdk_passthrough_port = port
-        mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
-        passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
+            if scheme == "serial":
+                mavsdk_passthrough_string = f"serial://{loc}"
+            else:
+                mavsdk_passthrough_string = f"{scheme}://:{appendix}"
 
         try:
             if self.server_addr is None:
@@ -464,18 +479,14 @@ class DroneMAVSDK(Drone):
                 self.server_addr = "127.0.0.1"
             self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
 
-            _, self.server_addr, self.server_port = parse_address(scheme="udp",
-                                                                  host=self.server_addr,
-                                                                  port=self.server_port,
-                                                                  return_string=False)
             connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
             # Create passthrough
             if self._passthrough:
                 await asyncio.sleep(0.5)  # Wait to try and make sure that the mavsdk server has started before booting up passthrough
                 self.logger.debug(
-                    f"Connecting passthrough to drone @{ip}:{port} and MAVSDK server @ {passthrough_gcs_string}")
-                self._passthrough.connect_drone(ip, port)
+                    f"Connecting passthrough to drone @{loc}:{appendix} and MAVSDK server @ {passthrough_gcs_string}")
+                self._passthrough.connect_drone(loc, appendix, scheme=scheme)
                 self._passthrough.connect_gcs(passthrough_gcs_string)
 
                 while not self._passthrough.connected_to_drone() or not self._passthrough.connected_to_gcs():
