@@ -6,7 +6,7 @@ import asyncio
 
 from pymavlink import mavutil
 
-from pymavlink.dialects.v10 import cubepilot
+# from pymavlink.dialects.v20 import cubepilot
 
 formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 

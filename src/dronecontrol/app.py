@@ -3,11 +3,10 @@ import datetime
 import os
 import shlex
 import numpy as np
-from typing import Dict
 
-from dronecontrol import DroneManager
-from drones import Drone
-from redcross import RedCross
+from dronecontrol.dronemanager import DroneManager
+from dronecontrol.drone import Drone, DroneMAVSDK
+from dronecontrol.redcross import RedCross
 
 import textual.css.query
 from textual import on, events
@@ -16,8 +15,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, ProgressBar
 from textual.widget import Widget
 
-from widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
-from drones import DroneMAVSDK
+from dronecontrol.widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
+
 
 import logging
 
@@ -37,9 +36,6 @@ DRONE_DICT = {
 }
 
 UPDATE_RATE = 20  # How often the various screens update in Hz
-
-
-# REQUIREMENTS: TEXTUAL, RICH, NUMPY, HAVERSINE, PYSERIAL, PYMAVLINK, MAVSDK-PYTHON
 
 
 class StatusScreen(Screen):
@@ -155,7 +151,7 @@ class CommandScreen(Screen):
     def __init__(self, dm, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.dm: DroneManager = dm
-        self.drone_widgets: Dict[str, Widget] = {}
+        self.drone_widgets: dict[str, Widget] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
@@ -350,7 +346,7 @@ class CommandScreen(Screen):
                 case "rc-rm":
                     self.rc_remove_drones(args.drones)
                 case "rc-stage":
-                    tmp = asyncio.create_task(self.stages(args.stage))
+                    tmp = asyncio.create_task(self.rc_stages(args.stage))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
@@ -416,7 +412,7 @@ class CommandScreen(Screen):
                 self.redcross.remove(name)
         self.logger.info(f"{self.redcross.current_drone_list()} currently taking part!")
 
-    async def stages(self, stage):
+    async def rc_stages(self, stage):
         if stage == 1:
             await self.redcross.stage_1()
         elif stage == 2:
@@ -533,15 +529,14 @@ class DroneApp(App):
             self.logger.debug("No valid target for switching")
 
 
-if __name__ == "__main__":
-    #start_parser = argparse.ArgumentParser()
-    #start_parser.add_argument("-d", "--dummy", action="store_true", help="If set, use a dummy drone class")
-
-    #start_args = start_parser.parse_args()
-
+def main():
     drone_type = DroneMAVSDK
     drone_manager = DroneManager(drone_type)
     app = DroneApp(drone_manager, logger=drone_manager.logger)
     app.run()
 
     logging.shutdown()
+
+
+if __name__ == "__main__":
+    main()

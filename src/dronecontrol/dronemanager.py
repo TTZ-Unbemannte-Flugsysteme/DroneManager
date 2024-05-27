@@ -3,10 +3,9 @@ import datetime
 import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
-from typing import Dict
 import random
 
-from drones import Drone, parse_address
+from dronecontrol.drone import Drone, parse_address
 
 import logging
 
@@ -32,7 +31,7 @@ class DroneManager:
 
     def __init__(self, drone_class, logger=None):
         self.drone_class = drone_class
-        self.drones: Dict[str, Drone] = {}
+        self.drones: dict[str, Drone] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.

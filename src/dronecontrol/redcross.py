@@ -1,10 +1,9 @@
 import asyncio
 import math
 import numpy as np
-from typing import Dict, List, Tuple
 from collections import OrderedDict
 
-from dronecontrol import DroneManager
+from dronecontrol.dronemanager import DroneManager
 
 # TODO: Move the qualify and redcross functions from app.py to here somehow
 #   TODO: How to do the parsing?  ->  Add a "add parser" hook to the app? Pass the subparsers object to RedCross?
@@ -61,7 +60,7 @@ class RedCross:
 
     def __init__(self, logger, dm: DroneManager):
         self.dm = dm
-        self.drones: Dict[str, DemoDrone] = OrderedDict()
+        self.drones: dict[str, DemoDrone] = OrderedDict()
         self.logger = logger
 
         # formation parameters
@@ -87,7 +86,7 @@ class RedCross:
     def current_drone_list(self):
         return [drone.name for name, drone in self.drones.items()]
 
-    def formation_line(self, waypoint: WayPoint) -> List[Tuple[float, float, float, float]]:
+    def formation_line(self, waypoint: WayPoint) -> list[tuple[float, float, float, float]]:
         # Returns a list with position_yaw coordinates for each drone
         forward = 4
         right = 0
@@ -98,7 +97,7 @@ class RedCross:
                                       waypoint.heading) for i in range(len(self.drones))]
         return position_yaw_local_drones
 
-    def formation_circle(self, waypoint: WayPoint) -> List[Tuple[float, float, float, float]]:
+    def formation_circle(self, waypoint: WayPoint) -> list[tuple[float, float, float, float]]:
         # TODO: calculate radius so we have 4m between drones on circumference, with min diameter 4m
         indices = list(range(len(self.drones)))
         if len(self.drones) == 3:
@@ -120,7 +119,7 @@ class RedCross:
                                       formation_offsets[i][3]) for i in range(len(self.drones))]
         return position_yaw_local_drones
 
-    def formation(self, waypoint) -> List[Tuple[float, float, float, float]]:
+    def formation(self, waypoint) -> list[tuple[float, float, float, float]]:
         if waypoint.in_circle:
             return self.formation_circle(waypoint)
         else:
@@ -174,7 +173,7 @@ class RedCross:
             for i, name in enumerate(self.drones):
                 drone = self.dm.drones[name]
                 self.drones[name].waypoint = coordinates[i]
-                await drone.set_waypoint_pos_ned(coordinates[i])
+                await drone.set_setpoint_pos_ned(coordinates[i])
             # Check that all drones have reached the waypoint before proceeding
             while not all(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)
@@ -235,7 +234,7 @@ class RedCross:
             for name in self.drones:
                 drone = self.dm.drones[name]
                 self.drones[name].waypoint = self.drones[name].launch_pos
-                await drone.set_waypoint_pos_ned(self.drones[name].launch_pos)
+                await drone.set_setpoint_pos_ned(self.drones[name].launch_pos)
             # Check that all drones have reached the waypoint before proceeding
             while not all(self._are_at_coordinates()):
                 await asyncio.sleep(0.1)
