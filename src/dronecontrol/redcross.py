@@ -242,3 +242,38 @@ class RedCross:
             self.logger.info("All drones landed!")
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)
+
+    async def qualify(self, name, altitude):
+        cur_pos = self.dm.drones[name].position_ned
+        x, y, z = cur_pos
+        try:
+            drone = self.dm.drones[name]
+        except KeyError:
+            self.logger.warning(f"No drone named {name}!")
+            return
+        try:
+            await self.dm.arm([name])
+            await asyncio.sleep(2)
+            await self.dm.takeoff([name])
+            await asyncio.sleep(2)
+        ############
+            self.logger.info("Big move forward 5m")
+            await drone.set_setpoint_pos_ned(np.asarray([5 + x, y, -altitude, 0], dtype=float))
+            await asyncio.sleep(7)
+            await drone.set_setpoint_pos_ned(np.asarray([0 + x, y, -altitude, 0], dtype=float))
+            await asyncio.sleep(9)
+        #############
+            await drone.set_setpoint_pos_ned(np.asarray([5 + x, y, -altitude, 0], dtype=float))
+            await asyncio.sleep(7)
+            self.logger.info("Turning, rate 10deg/2, 10Hz")
+            await drone.spin_at_rate(10, 36, "cw")
+            await asyncio.sleep(2)
+            self.logger.info("Turning, rate 30deg/2, 10Hz")
+            await drone.spin_at_rate(30, 12, "cw")
+            await asyncio.sleep(2)
+        #############
+            await drone.set_setpoint_pos_ned(np.asarray([0 + x, y, -altitude, 0], dtype=float))
+            await asyncio.sleep(7)
+            await self.dm.land([name])
+        except Exception as e:
+            self.logger.error(f"{repr(e)}", exc_info=True)
