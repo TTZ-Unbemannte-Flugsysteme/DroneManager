@@ -1,24 +1,21 @@
 # DroneControl
 
+A simple package to connect to and control multiple drones.
 
+## Installation
 
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
-
+To install this package, simply clone this repository, move into the root directory and then install with pip:
 ```
-cd existing_repo
-git remote add origin http://git.aimotion.thi.de/engel/dronecontrol.git
-git branch -M main
-git push -uf origin main
+pip install --upgrade pip
+pip install -e .
 ```
+
+As part of the installation a script called ```dm``` is installed, which starts a terminal interface.
+
+## Usage
+
+
+# GitLab default README (check and then get rid of)
 
 ## Integrate with your tools
 

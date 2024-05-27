@@ -3,11 +3,9 @@ import datetime
 import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
-from typing import Dict
-import numpy as np
 import random
 
-from drones import Drone, parse_address
+from dronecontrol.drone import Drone, parse_address
 
 import logging
 
@@ -33,7 +31,7 @@ class DroneManager:
 
     def __init__(self, drone_class, logger=None):
         self.drone_class = drone_class
-        self.drones: Dict[str, Drone] = {}
+        self.drones: dict[str, Drone] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
@@ -45,7 +43,6 @@ class DroneManager:
         if logger is None:
             self.logger = logging.getLogger("Manager")
             self.logger.setLevel(logging.DEBUG)
-
             filename = f"manager_{datetime.datetime.now()}"
             filename = filename.replace(":", "_").replace(".", "_") + ".log"
             logdir = os.path.abspath("./logs")
@@ -68,12 +65,15 @@ class DroneManager:
                                drone_address: str,
                                timeout: float, compid=190):
         try:
-            _, parsed_addr, parsed_port = parse_address(string=drone_address)
-            parsed_connection_string = parse_address(string=drone_address, return_string=True)
+            scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
             self.logger.info(repr(e))
             return False
-        self.logger.info(f"Trying to connect to drone {name} @{parsed_connection_string}")
+        if scheme == "serial":
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}")
+        else:
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}:{parsed_port}")
+        drone = None
         async with self.drone_lock:
             try:
                 # Ensure that for each drone there is a one-to-one-to-one relation between name, mavsdk port and drone
@@ -99,14 +99,17 @@ class DroneManager:
                     connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
                 except (TimeoutError, CancelledError):
                     self.logger.warning(f"Connection attempts to {name} timed out!")
+                    await self._remove_drone_object(name, drone)
                     return False
                 except (OSError, socket.gaierror) as e:
                     self.logger.info(f"Address error, probably due to invalid address")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 except AssertionError as e:
                     self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
                     self.logger.debug(f"{repr(e)}", exc_info=True)
+                    await self._remove_drone_object(name, drone)
                     return False
                 if connected:
                     self.logger.info(f"Connected to {name}!")
@@ -115,16 +118,24 @@ class DroneManager:
                         try:
                             await asyncio.create_task(func(name, drone))
                         except Exception as e:
+                            self.logger.error(f"Failed post-connection process: {repr(e)}")
                             self.logger.debug(repr(e), exc_info=True)
+                            await self._remove_drone_object(name, drone)
+                            return False
                     return True
                 else:
                     self.logger.warning(f"Failed to connect to drone {name}!")
+                    await self._remove_drone_object(name, drone)
                     return False
             except (TimeoutError, CancelledError):
                 self.logger.warning(f"Connection attempts to {name} timed out!")
+                if drone is not None:
+                    await self._remove_drone_object(name, drone)
                 return False
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
+                if drone is not None:
+                    await self._remove_drone_object(name, drone)
                 return False
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
@@ -147,13 +158,16 @@ class DroneManager:
             self.logger.error(repr(e))
 
     async def arm(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.arm, names, "Arming drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.arm, names,
+                                                 "Arming drone(s) {}.", schedule=schedule)
 
     async def disarm(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.disarm, names, "Disarming drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.disarm, names,
+                                                 "Disarming drone(s) {}.", schedule=schedule)
 
     async def takeoff(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.takeoff, names, "Takeoff for Drone(s) {}.", schedule=schedule)
+        return await self._multiple_drone_action(self.drone_class.takeoff, names,
+                                                 "Takeoff for Drone(s) {}.", schedule=schedule)
 
     async def change_flightmode(self, names, flightmode, schedule=False):
         await self._multiple_drone_action(self.drone_class.change_flight_mode,
@@ -162,7 +176,8 @@ class DroneManager:
                                           flightmode, schedule=schedule)
 
     async def land(self, names, schedule=False):
-        await self._multiple_drone_action(self.drone_class.land, names, "Landing drone(s) {}.", schedule=schedule)
+        await self._multiple_drone_action(self.drone_class.land, names,
+                                          "Landing drone(s) {}.", schedule=schedule)
 
     async def pause(self, names):
         self.logger.info(f"Pausing drone(s) {names}")
@@ -174,22 +189,25 @@ class DroneManager:
         for name in names:
             self.drones[name].resume()
 
-    async def fly_to(self, name, x, y, z, yaw, tol=0.5):
-        point = np.array([x, y, z, yaw])
-        self.logger.info(f"Queueing move to {point} for {name}.")
+    async def fly_to(self, name, x, y, z, yaw, tol=0.5, schedule=True):
+        self.logger.info(f"Queueing move to {x, y, z, yaw} for {name}.")
         try:
-            coro = self.drones[name].fly_to_point(point, tolerance=tol)
-            result = self.drones[name].schedule_task(coro)
+            coro = self.drones[name].fly_to(x=x, y=y, z=z, yaw=yaw, tolerance=tol)
+            if schedule:
+                result = self.drones[name].schedule_task(coro)
+            else:
+                result = self.drones[name].execute_task(coro)
             await result
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
         self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
         try:
-            coro = self.drones[name].fly_to_gps(lat, long, alt, yaw, tolerance=tol)
+            coro = self.drones[name].fly_to(lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
             result = self.drones[name].schedule_task(coro)
             await result
         except KeyError:
@@ -258,12 +276,13 @@ class DroneManager:
                 await asyncio.create_task(func(name))
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
-        try:
-            drone.should_stop.set()
-            drone.__del__()
-            del drone
-        except Exception as e:
-            self.logger.error(repr(e), exc_info=True)
+        if drone is not None:
+            try:
+                drone.should_stop.set()
+                drone.__del__()
+                del drone
+            except Exception as e:
+                self.logger.error(repr(e), exc_info=True)
 
     def add_remove_func(self, func):
         self._on_drone_removal_coros.add(func)

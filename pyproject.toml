@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "DroneManager"
+version = "0.1"
+authors = [
+    {name="Dominik Mattern", email="dominik.mattern@thi.de"},
+    {name="Babak Salamat", email="babak.salamat@thi.de"},
+    {name="Tim Drouven", email="tim.drouven@thi.de"}, ]
+description = "Package to connect to and control multiple drones, either programmatically or using a CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "textual",
+    "rich",
+    "mavsdk",
+    "pymavlink",
+    "pyserial",
+    "haversine", ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent", ]
+
+[project.scripts]
+dm = "dronecontrol.app:main"

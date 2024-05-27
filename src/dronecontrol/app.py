@@ -1,12 +1,11 @@
 import asyncio
 import datetime
 import os
-import argparse
 import shlex
-from typing import Dict
+import numpy as np
 
-from dronecontrol import DroneManager
-from drones import Drone
+from dronecontrol.dronemanager import DroneManager
+from dronecontrol.drone import Drone, DroneMAVSDK
 
 import textual.css.query
 from textual import on, events
@@ -15,9 +14,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Log, Static, RadioSet, RadioButton, ProgressBar
 from textual.widget import Widget
 
-from widgets import InputWithHistory, TextualLogHandler, DroneOverview
-from drones import DroneMAVSDK, DummyMAVDrone
-from betterparser import ArgParser, ArgumentParserError
+from dronecontrol.widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
+
 
 import logging
 
@@ -32,7 +30,8 @@ DRONE_DICT = {
     "tycho":  "udp://192.168.1.34:14564",
     "gavin":  "udp://192.168.1.35:14565",
     "corran": "udp://192.168.1.36:14566",
-    "jaina":  "udp://192.168.1.37:14567"
+    "jaina":  "udp://192.168.1.37:14567",
+    "kira":   "serial://COM5:56700",
 }
 
 UPDATE_RATE = 20  # How often the various screens update in Hz
@@ -53,9 +52,9 @@ Bar {
 }
 """
 
-    def __init__(self, drone_manager, logger, *args, **kwargs):
+    def __init__(self, dm, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = drone_manager
+        self.dm: DroneManager = dm
         self.cur_drone: Drone | None = None
         self.logger = logger
         asyncio.create_task(self._update_values())
@@ -70,7 +69,8 @@ Bar {
                     self.query_one("#name", expect_type=Static).update(f"{self.cur_drone.name}")
                     self.query_one("#address", expect_type=Static).update(f"{self.cur_drone.drone_addr}")
                     self.query_one("#attitude", expect_type=Static).update(f"{self.cur_drone.attitude}")
-                    self.query_one("#battery", expect_type=ProgressBar).update(progress=self.cur_drone.batteries[0].remaining)
+                    self.query_one("#battery", expect_type=ProgressBar).update(
+                        progress=self.cur_drone.batteries[0].remaining)
                 else:
                     self.query_one("#name", expect_type=Static).update("NAME: NO DRONE SELECTED")
                     self.query_one("#address", expect_type=Static).update("ADDRESS: NO DRONE SELECTED")
@@ -103,30 +103,23 @@ Bar {
                 pass
 
     async def _add_drone(self, name, drone):
-        try:
-            self.logger.debug(f"Adding radio button for {name}")
-            radio_selector = RadioButton(f"{name}", id=f"button_{name}")
-            radio_field = self.query_one("#droneselector", expect_type=RadioSet)
-            await radio_field.mount(radio_selector)
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
+        self.logger.debug(f"Adding radio button for {name}")
+        radio_selector = RadioButton(f"{name}", id=f"button_{name}")
+        radio_field = self.query_one("#droneselector", expect_type=RadioSet)
+        await radio_field.mount(radio_selector)
 
     async def _remove_drone(self, name):
+        if self.cur_drone is not None and self.cur_drone.name == name:
+            # Have to change current drone to prevent stuff breaking
+            self.cur_drone = None
         try:
-            if self.cur_drone is not None and self.cur_drone.name == name:
-                # Have to change current drone to prevent stuff breaking
-                self.cur_drone = None
-            try:
-                self.logger.debug(f"Removing radio button for {name}")
-                await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
-                # Move currently selected button after removal to prevent index errors
-                selector = self.query_one(f"#droneselector", expect_type=RadioSet)
-                selector.action_next_button()
-            except textual.css.query.NoMatches:
-                pass
-        except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
-            raise
+            self.logger.debug(f"Removing radio button for {name}")
+            await self.query_one(f"#button_{name}", expect_type=RadioButton).remove()
+            # Move currently selected button after removal to prevent index errors
+            selector = self.query_one(f"#droneselector", expect_type=RadioSet)
+            selector.action_next_button()
+        except textual.css.query.NoMatches:
+            pass
 
 
 class CommandScreen(Screen):
@@ -150,14 +143,14 @@ class CommandScreen(Screen):
 }
 
 #sidebar {
-    width: 77;
+    width: 97;
 }
 """
 
-    def __init__(self, drone_manager, logger, *args, **kwargs):
+    def __init__(self, dm, logger, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = drone_manager
-        self.drone_widgets: Dict[str, Widget] = {}
+        self.dm: DroneManager = dm
+        self.drone_widgets: dict[str, Widget] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
@@ -284,47 +277,49 @@ class CommandScreen(Screen):
             if args.command != "kill" or args.drones:
                 self._kill_counter = 0
 
-            if args.command == "connect":
-                address = args.drone_address
-                if args.drone in DRONE_DICT and not address:
-                    address = DRONE_DICT[args.drone]
-                elif not address:
-                    address = "udp://:14540"
-                tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address, args.server_port,
-                                                                   address, args.timeout))
-            elif args.command == "arm":
-                tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
-            elif args.command == "disarm":
-                tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
-            elif args.command == "takeoff":
-                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
-            elif args.command == "mode":
-                tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
-            elif args.command == "flyto":
-                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw, tol=args.tolerance))
-            elif args.command == "flytogps":
-                tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                          tol=args.tolerance))
-            elif args.command == "orbit":
-                tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
-                                                     args.center_long, args.amsl))
-            elif args.command == "land":
-                tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
-            elif args.command == "pause":
-                tmp = asyncio.create_task(self.dm.pause(args.drones))
-            elif args.command == "resume":
-                tmp = asyncio.create_task(self.dm.resume(args.drones))
-            elif args.command == "stop":
-                tmp = asyncio.create_task(self.action_stop(args.drones))
-            elif args.command == "kill":
-                if not args.drones:
-                    if self._kill_counter:
-                        tmp = asyncio.create_task(self.dm.kill(args.drones))
+            match args.command:
+                case "connect":
+                    address = args.drone_address
+                    if args.drone in DRONE_DICT and not address:
+                        address = DRONE_DICT[args.drone]
+                    elif not address:
+                        address = "udp://:14540"
+                    tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
+                                                                       args.server_port, address, args.timeout))
+                case "arm":
+                    tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
+                case "disarm":
+                    tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
+                case "takeoff":
+                    tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+                case "mode":
+                    tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
+                case "flyto":
+                    tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+                                                             tol=args.tolerance))
+                case "flytogps":
+                    tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
+                                                                 tol=args.tolerance))
+                case "orbit":
+                    tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
+                                                            args.center_long, args.amsl))
+                case "land":
+                    tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
+                case "pause":
+                    tmp = asyncio.create_task(self.dm.pause(args.drones))
+                case "resume":
+                    tmp = asyncio.create_task(self.dm.resume(args.drones))
+                case "stop":
+                    tmp = asyncio.create_task(self.action_stop(args.drones))
+                case "kill":
+                    if not args.drones:
+                        if self._kill_counter:
+                            tmp = asyncio.create_task(self.dm.kill(args.drones))
+                        else:
+                            self.logger.warning("Are you sure? Enter kill again")
+                            self._kill_counter += 1
                     else:
-                        self.logger.warning("Are you sure? Enter kill again")
-                        self._kill_counter += 1
-                else:
-                    tmp = asyncio.create_task(self.dm.kill(args.drones))
+                        tmp = asyncio.create_task(self.dm.kill(args.drones))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
@@ -391,8 +386,8 @@ class DroneApp(App):
         Binding("s", "cycle_control", "Swap Status/Control"),
     }
 
-    def __init__(self, drone_manager: DroneManager, logger=None):
-        self.drone_manager = drone_manager
+    def __init__(self, dm: DroneManager, logger=None):
+        self.drone_manager = dm
         if logger is None:
             self.logger = logging.getLogger("App")
             self.logger.setLevel(logging.DEBUG)
@@ -411,15 +406,11 @@ class DroneApp(App):
         super().__init__()
 
     def on_mount(self):
-        screen = CommandScreen(drone_manager=self.drone_manager,
-                               logger=self.logger,
-                               name="control-screen")
+        screen = CommandScreen(self.drone_manager, self.logger, name="control-screen")
         self.install_screen(screen, name=screen.name)
         self.add_mode("control", base_screen=screen)
         self.command_screen = screen
-        status_screen = StatusScreen(drone_manager=self.drone_manager,
-                                     logger=self.logger,
-                                     name="status-screen")
+        status_screen = StatusScreen(self.drone_manager, self.logger, name="status-screen")
         self.install_screen(status_screen, name=status_screen.name)
         self.add_mode("status", base_screen=status_screen)
         self.status_screen = status_screen
@@ -438,15 +429,14 @@ class DroneApp(App):
             self.logger.debug("No valid target for switching")
 
 
-if __name__ == "__main__":
-    start_parser = argparse.ArgumentParser()
-    start_parser.add_argument("-d", "--dummy", action="store_true", help="If set, use a dummy drone class")
-
-    start_args = start_parser.parse_args()
-
-    drone_type = DummyMAVDrone if start_args.dummy else DroneMAVSDK
-    dm = DroneManager(drone_type)
-    app = DroneApp(drone_manager=dm, logger=dm.logger)
+def main():
+    drone_type = DroneMAVSDK
+    drone_manager = DroneManager(drone_type)
+    app = DroneApp(drone_manager, logger=drone_manager.logger)
     app.run()
 
     logging.shutdown()
+
+
+if __name__ == "__main__":
+    main()
