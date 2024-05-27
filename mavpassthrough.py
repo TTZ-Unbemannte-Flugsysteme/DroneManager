@@ -162,7 +162,7 @@ class MAVPassthrough:
             self.logger.debug(f"Message with BAD_DATE id, can't resend: {msg_id}, {msg.to_dict()}")
             return False
         if msg_id == -2:
-            self.logger.debug(f"Message with unkown MAVLink ID, can't resend: {msg_id}, {msg.get_type} "
+            self.logger.debug(f"Message with unkown MAVLink ID, can't resend: {msg_id}, {msg.get_type()} "
                               f"{msg.fieldnames}, {msg.fieldtypes}, {msg.orders}, {msg.lengths}, "
                               f"{msg.array_lengths}, {msg.crc_extra}, {msg.unpacker}")
             return False
