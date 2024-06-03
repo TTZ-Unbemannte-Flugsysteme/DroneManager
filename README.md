@@ -1,6 +1,6 @@
 # DroneControl
 
-A simple package to connect to and control multiple drones.
+A package to connect to and control multiple drones.
 
 ## Installation
 
@@ -10,10 +10,14 @@ pip install --upgrade pip
 pip install -e .
 ```
 
-As part of the installation a script called ```dm``` is installed, which starts a terminal interface.
+As part of the installation a command called ```dm``` is installed, which starts the terminal interface. 
+Alternatively you can run the app.py script.
 
 ## Usage
 
+### Terminal interface
+
+### API
 
 # GitLab default README (check and then get rid of)
 
