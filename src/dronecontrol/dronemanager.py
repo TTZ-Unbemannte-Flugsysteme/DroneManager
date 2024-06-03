@@ -189,7 +189,7 @@ class DroneManager:
         for name in names:
             self.drones[name].resume()
 
-    async def fly_to(self, name, x, y, z, yaw, tol=0.5, schedule=True):
+    async def fly_to(self, name, x, y, z, yaw, tol=0.25, schedule=True):
         self.logger.info(f"Queueing move to {x, y, z, yaw} for {name}.")
         try:
             coro = self.drones[name].fly_to(x=x, y=y, z=z, yaw=yaw, tolerance=tol)
@@ -204,10 +204,21 @@ class DroneManager:
             self.logger.error(repr(e))
             self.logger.debug(repr(e), exc_info=True)
 
-    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.5):
+    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25):
         self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
         try:
             coro = self.drones[name].fly_to(lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
+            result = self.drones[name].schedule_task(coro)
+            await result
+        except KeyError:
+            self.logger.warning(f"No drone named {name}!")
+        except Exception as e:
+            self.logger.error(repr(e))
+
+    async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25):
+        self.logger.info(f"Queuing move by {(x, y, z)} for  {name}")
+        try:
+            coro = self.drones[name].move(x, y, z, yaw, use_gps=not no_gps, tolerance=tol)
             result = self.drones[name].schedule_task(coro)
             await result
         except KeyError:

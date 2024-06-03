@@ -5,7 +5,7 @@ import math
 import os.path
 from enum import Enum, auto
 import threading
-import haversine
+from haversine import inverse_haversine, haversine, Direction, Unit
 import platform
 import time
 from subprocess import Popen, DEVNULL
@@ -42,9 +42,18 @@ def dist_ned(pos1, pos2):
 
 
 def dist_gps(lat1, long1, alt1, lat2, long2, alt2):
-    dist_horiz = haversine.haversine((lat1, long1), (lat2, long2), unit=haversine.Unit.METERS)
+    dist_horiz = haversine((lat1, long1), (lat2, long2), unit=Unit.METERS)
     dist_alt = alt1 - alt2
     return math.sqrt(dist_horiz*dist_horiz + dist_alt*dist_alt)
+
+
+def relative_gps(north, east, up, lat, long, alt):
+    """ Given a NEU offset and a GPS position, calculate the GPS coordinates of the offset position."""
+    target_alt = alt + up
+    coords = (lat, long)
+    coords = inverse_haversine(coords, north, Direction.NORTH, unit=Unit.METERS)
+    target_lat, target_long = inverse_haversine(coords, east, Direction.EAST, unit=Unit.METERS)
+    return target_lat, target_long, target_alt
 
 
 class Battery:
@@ -254,6 +263,7 @@ class Drone(ABC, threading.Thread):
         return False
 
     def is_at_heading(self, target_heading, tolerance=1) -> bool:
+        target_heading = (target_heading + 180) % 360 - 180
         cur_heading = self.attitude[2]
         if abs(cur_heading - target_heading) < tolerance:
             return True
@@ -275,6 +285,32 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def fly_to(self, x=None, y=None, z=None, lat=None, long=None, amsl=None, yaw=None, tolerance=0.25):
+        """ Fly to the specified position.
+
+        :param x:
+        :param y:
+        :param z:
+        :param lat:
+        :param long:
+        :param amsl:
+        :param yaw:
+        :param tolerance:
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    async def move(self, north, east, down, yaw, use_gps=True, tolerance=0.25):
+        """ Move from the current position by the specified distances.
+
+        :param north:
+        :param east:
+        :param down:
+        :param yaw:
+        :param use_gps:
+        :param tolerance:
+        :return:
+        """
         pass
 
     @abstractmethod
@@ -379,7 +415,7 @@ class DroneMAVSDK(Drone):
         self._flightmode: FlightMode = FlightMode.UNKNOWN
         self._in_air: bool = False
         self._gps_info: FixType | None = None
-        self._position_g: np.ndarray = np.zeros((4,), dtype=np.double)  # Latitude, Longitude, AMSL, Relative altitude
+        self._position_g: np.ndarray = np.zeros((4,), dtype=np.double)  # Latitude, Longitude, AMSL, Relative altitude to takeoff
         self._position_ned: np.ndarray = np.zeros((3,))     # NED
         self._velocity: np.ndarray = np.zeros((3,))         # NED
         self._attitude: np.ndarray = np.zeros((3,))         # Roll, pitch and yaw, with positives right up and right.
@@ -898,6 +934,26 @@ class DroneMAVSDK(Drone):
                     return True
             await asyncio.sleep(1/self._position_update_freq)
 
+    async def move(self, north, east, down, yaw, use_gps=True, tolerance=0.25):
+        target_x = None
+        target_y = None
+        target_z = None
+        target_lat = None
+        target_long = None
+        target_amsl = None
+        if use_gps:
+            cur_lat, cur_long, cur_alt, cur_ata = self.position_global
+            target_lat, target_long, target_amsl = relative_gps(north, east, -down, cur_lat, cur_long, cur_alt)
+        else:
+            cur_x, cur_y, cur_z = self.position_ned
+            target_x = cur_x + north
+            target_y = cur_y + east
+            target_z = cur_z + down
+        target_yaw = self.attitude[2] + yaw
+        return await self.fly_to(x=target_x, y=target_y, z=target_z,
+                                 lat=target_lat, long=target_long, amsl=target_amsl,
+                                 yaw=target_yaw, put_into_offboard=True, tolerance=tolerance)
+
     async def orbit(self, radius, velocity, center_lat, center_long, amsl):
         await super().orbit(radius, velocity, center_lat, center_long, amsl)
         if not self.is_armed or not self.in_air:
@@ -1051,6 +1107,8 @@ class StaticWaypoints(TrajectoryGenerator):
     def next_setpoint(self) -> np.ndarray:
         if self.use_gps:
             self.setpoint_type = SetPointType.POS_GLOBAL
+        else:
+            self.setpoint_type = SetPointType.POS_NED
         return self.target_position
 
 
