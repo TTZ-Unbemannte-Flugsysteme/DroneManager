@@ -26,8 +26,8 @@ class GMP3Config:
         self.Q11    = Q11
         self.Q22    = Q22
         self.Q12    = Q12
-        self.nobs   = len(obstacles)
-        self.obstacles = obstacles if obstacles is not None else [] 
+        self.obstacles = obstacles if obstacles is not None else []
+        self.nobs = len(self.obstacles)
         self.pathfound = []
         self.iterations_needed = []
         

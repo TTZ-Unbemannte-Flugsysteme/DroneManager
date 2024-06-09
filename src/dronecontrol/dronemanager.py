@@ -225,6 +225,7 @@ class DroneManager:
             self.logger.warning(f"No drone named {name}!")
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
 
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:

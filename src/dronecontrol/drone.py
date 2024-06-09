@@ -435,7 +435,7 @@ class DroneMAVSDK(Drone):
             if name == "kira":
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
-        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
+        self.trajectory_gen = GMP3Gen(self, 1/self._position_update_freq)
 
     def __del__(self):
         self.system.__del__()
@@ -1188,16 +1188,14 @@ class DirectFlightFacingForward(TrajectoryGenerator):
 
 class GMP3Gen(TrajectoryGenerator):
 
-    # TODO: Altitude and yaw. Both are currently set as part of initialization and shouldn't be changed while
-    #  following a trajectory. They can be changed by adjusting their value in between waypoints.
+    # TODO: GMP3 currently doesn't run with less than 2 obstacles
+    # TODO: Altitude and yaw. Both are currently just set immediately when we get a new target
 
     SETPOINT_TYPES = {SetPointType.POS_VEL_NED}
     CAN_DO_GPS = False
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_VEL_NED, altitude=-2, yaw=0):
+    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_VEL_NED):
         super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
-        self.altitude = altitude
-        self.yaw = yaw
         self.config = GMP3Config(
             maxit=100,
             alpha=3,
@@ -1208,7 +1206,7 @@ class GMP3Gen(TrajectoryGenerator):
             Q11=1.6,
             Q22=1.6,
             Q12=8,
-            obstacles=None,
+            obstacles=[(1.0, 1.0, 1.0)],
         )
         self.gmp3 = GMP3(self.config)
         self.waypoints = None
@@ -1240,5 +1238,5 @@ class GMP3Gen(TrajectoryGenerator):
         if current_waypoint is None:
             raise RuntimeError("Ran out of Waypoints before reaching target!")
         t, x, y, xdot, ydot = current_waypoint
-        setpoint = np.asarray([x, y, self.altitude, xdot, ydot, 0, self.yaw])
+        setpoint = np.asarray([x, y, self.target_position[2], xdot, ydot, 0, self.target_position[3]])
         return setpoint
