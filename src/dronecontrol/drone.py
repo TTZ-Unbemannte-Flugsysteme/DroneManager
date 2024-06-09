@@ -22,6 +22,8 @@ from mavsdk.manual_control import ManualControlError
 
 from dronecontrol.mavpassthrough import MAVPassthrough
 
+from dronecontrol.GMP3 import GMP3, GMP3Config
+
 import logging
 
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1124,3 +1126,61 @@ class DirectFlightFacingForward(TrajectoryGenerator):
 
         vel_yaw_setpoint = np.asarray([vel_x, vel_y, vel_z, yaw])
         return vel_yaw_setpoint
+
+
+class GMP3Gen(TrajectoryGenerator):
+
+    # TODO: Altitude and yaw. Both are currently set as part of initialization and shouldn't be changed while
+    #  following a trajectory. They can be changed by adjusting their value in between waypoints.
+
+    SETPOINT_TYPES = {SetPointType.POS_VEL_NED}
+    CAN_DO_GPS = False
+
+    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_VEL_NED, altitude=-2, yaw=0):
+        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+        self.altitude = altitude
+        self.yaw = yaw
+        self.config = GMP3Config(
+            maxit=100,
+            alpha=3,
+            wdamp=0.999,
+            delta=0.05,
+            vx_max=2,
+            vy_max=2,
+            Q11=1.6,
+            Q22=1.6,
+            Q12=8,
+            obstacles=None,
+        )
+        self.gmp3 = GMP3(self.config)
+        self.waypoints = None
+        self.start_time = None
+
+    def calculate_path(self):
+        cur_x, cur_y, _ = self.drone.position_ned
+        self.gmp3.calculate((cur_x, cur_y), (self.target_position[0], self.target_position[1]))
+        ts = self.gmp3.t
+        xs = self.gmp3.x
+        ys = self.gmp3.y
+        xdots = self.gmp3.xdot
+        ydots = self.gmp3.ydot
+        self.waypoints = zip(ts, xs, ys, xdots, ydots)
+        self.start_time = time.time()
+
+    def set_target(self, point: np.ndarray):
+        super().set_target(point)
+        self.calculate_path()
+
+    def next_setpoint(self) -> np.ndarray:
+        if self.waypoints is None:
+            raise RuntimeError("Called for path setpoints before calculating path!")
+        current_waypoint = None
+        for wp in self.waypoints:
+            if time.time() <= self.start_time + wp[0]:
+                current_waypoint = wp
+                break
+        if current_waypoint is None:
+            raise RuntimeError("Ran out of Waypoints before reaching target!")
+        t, x, y, xdot, ydot = current_waypoint
+        setpoint = np.asarray([x, y, self.altitude, xdot, ydot, 0, self.yaw])
+        return setpoint
