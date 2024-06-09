@@ -5,11 +5,8 @@ from collections import OrderedDict
 
 from dronecontrol.dronemanager import DroneManager
 
-# TODO: Move the qualify and redcross functions from app.py to here somehow
-#   TODO: How to do the parsing?  ->  Add a "add parser" hook to the app? Pass the subparsers object to RedCross?
-#   TODO: How to do the functions?  ->  ???
-
-# TODO: Fix stage 4 completion check (Fires during stage 5 for some reason?)
+# TODO: How to do the parsing?  ->  Add a "add parser" hook to the app? Pass the subparsers object to RedCross?
+# TODO: How to do the functions?  ->  ???
 
 
 class WayPoint:
