@@ -2,7 +2,6 @@ import asyncio
 import datetime
 import os
 import shlex
-import numpy as np
 
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import Drone, DroneMAVSDK
@@ -180,33 +179,33 @@ class CommandScreen(Screen):
                                     help="Timeout in seconds for connection attempts.")
         arm_parser = subparsers.add_parser("arm", help="Arm the named drone(s).")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
-        arm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-                                                                              "executing immediately.")
+        arm_parser.add_argument("-s", "--schedule", action="store_true",
+                                help="Queue this action instead of executing immediately.")
 
         disarm_parser = subparsers.add_parser("disarm", help="Disarm the named drone(s).")
         disarm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to disarm")
-        disarm_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-                                                                                 "executing immediately.")
+        disarm_parser.add_argument("-s", "--schedule", action="store_true",
+                                   help="Queue this action instead of executing immediately.")
 
         takeoff_parser = subparsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
-        takeoff_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-                                                                                  "executing immediately.")
+        takeoff_parser.add_argument("-s", "--schedule", action="store_true",
+                                    help="Queue this action instead of executing immediately.")
 
         offboard_parser = subparsers.add_parser("mode", help="Change the drone(s) flight mode")
-        offboard_parser.add_argument("mode", type=str, help="Target flight mode. Must be one of {}.".format(
-            self.dm.drone_class.VALID_FLIGHTMODES))
-        offboard_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to change flight mode on.")
-        #offboard_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
-        #                                                                           "executing immediately.")
+        offboard_parser.add_argument("mode", type=str,
+                                     help="Target flight mode. Must be one of {}.".format(self.dm.drone_class.VALID_FLIGHTMODES))
+        offboard_parser.add_argument("drones", type=str, nargs="+",
+                                     help="Drone(s) to change flight mode on.")
 
         fly_to_parser = subparsers.add_parser("flyto", help="Send the drone to a local coordinate.")
         fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
         fly_to_parser.add_argument("x", type=float, help="Target x coordinate")
         fly_to_parser.add_argument("y", type=float, help="Target y coordinate")
         fly_to_parser.add_argument("z", type=float, help="Target z coordinate")
-        fly_to_parser.add_argument("yaw", type=float, nargs="?", default=0.0, help="Target yaw in degrees. Default 0.")
-        fly_to_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.5,
+        fly_to_parser.add_argument("yaw", type=float, nargs="?", default=0.0,
+                                   help="Target yaw in degrees. Default 0.")
+        fly_to_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
                                    help="Position tolerance")
 
         fly_to_gps_parser = subparsers.add_parser("flytogps", help="Send the drone to a GPS coordinate")
@@ -214,10 +213,24 @@ class CommandScreen(Screen):
         fly_to_gps_parser.add_argument("lat", type=float, help="Target latitude")
         fly_to_gps_parser.add_argument("long", type=float, help="Target longitude")
         fly_to_gps_parser.add_argument("alt", type=float, help="Target altitude (relative to takeoff)")
-        fly_to_gps_parser.add_argument("yaw", type=float, nargs="?", default=0.0, help="Target yaw in degrees. "
-                                                                                       "Default 0.")
-        fly_to_gps_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.5,
+        fly_to_gps_parser.add_argument("yaw", type=float, nargs="?", default=0.0,
+                                       help="Target yaw in degrees. Default 0.")
+        fly_to_gps_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
                                        help="Position tolerance")
+
+        move_parser = subparsers.add_parser("move", help="Send the drones x, y, z meters north, east or down.")
+        move_parser.add_argument("drone", type=str, help="Name of the drone")
+        move_parser.add_argument("x", type=float, help="How many meters to move north (negative for south).")
+        move_parser.add_argument("y", type=float, help="How many meters to move east (negative for west).")
+        move_parser.add_argument("z", type=float, help="How many meters to move down (negative for up).")
+        move_parser.add_argument("yaw", type=float, nargs="?", default=0.0,
+                                 help="How many degrees to move to the right (negative for left). Note that this does "
+                                      "not wrap around, i.e. 350 degrees to right will move the drone 10 degrees to "
+                                      "the left. Default 0 degrees.")
+        move_parser.add_argument("-nogps", action="store_true",
+                                 help="If this flag is set we move using the drones local coordinate system.")
+        move_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
+                                 help="Position tolerance")
 
         fly_circle_parser = subparsers.add_parser("orbit", help="Fly in a circle, facing the center point")
         fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
@@ -318,6 +331,9 @@ class CommandScreen(Screen):
                 case "flytogps":
                     tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
                                                                  tol=args.tolerance))
+                case "move":
+                    tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw,
+                                                           no_gps=args.nogps, tol=args.tolerance))
                 case "orbit":
                     tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
                                                             args.center_long, args.amsl))

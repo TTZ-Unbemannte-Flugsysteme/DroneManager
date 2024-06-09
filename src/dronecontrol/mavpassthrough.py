@@ -70,17 +70,17 @@ class MAVPassthrough:
             self.logger.debug(f"Connecting to drone @{path}:{baud}")
 
             tmp_con_drone_in = mavutil.mavlink_connection(f"{path}",
-                                                           baud=baud,
-                                                           source_system=self.source_system,
-                                                           source_component=self.source_component,
-                                                           dialect=self.dialect)
+                                                          baud=baud,
+                                                          source_system=self.source_system,
+                                                          source_component=self.source_component,
+                                                          dialect=self.dialect)
 
             received_hb = 0
             while received_hb < 3:
                 self.logger.debug("Sending initial drone heartbeat")
                 tmp_con_drone_in.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
-                                                     mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                                                     0, 0, 0)
+                                                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                                                    0, 0, 0)
                 await asyncio.sleep(0.1)
                 m = tmp_con_drone_in.wait_heartbeat(blocking=False)
                 if m is not None:
