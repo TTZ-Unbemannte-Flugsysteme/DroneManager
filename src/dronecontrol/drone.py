@@ -508,7 +508,7 @@ class DroneMAVSDK(Drone):
                 self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
                                   f"connection {mavsdk_passthrough_string}")
             if self.server_addr is None and platform.system() == "Windows":
-                self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {mavsdk_passthrough_string}",
+                self._server_process = Popen(f"{_mav_server_file} -p {self.server_port} {mavsdk_passthrough_string}",
                                              stdout=DEVNULL, stderr=DEVNULL)
                 self.server_addr = "127.0.0.1"
             self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
@@ -1067,6 +1067,7 @@ class DroneMAVSDK(Drone):
 
 
 class TrajectoryGenerator(ABC):
+    # TODO: Check that generator can produce setpoints/has path ready
 
     CAN_DO_GPS = False
     SETPOINT_TYPES = set()
