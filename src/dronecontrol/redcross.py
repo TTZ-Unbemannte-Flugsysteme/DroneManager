@@ -30,29 +30,36 @@ class RedCross:
     # TODO: Checks to prevent flying in the wrong stage (only allow current stage +1 and reset to stage 0(landed) or
     #  stage 1(at start positions)
 
+    # Start         1.3, 3.5
+    # line up       4.2, 0
+    # wp 1          17.3, 37
+    # wp2           30, 30
+    # found         24.4, 6
+    # circle        28.1, 1.6
+
     STAGE2_WP = [
-        WayPoint(0, 3, -2, 0, False, True),
-        WayPoint(3, 3, -2, 0, False, True),
-        WayPoint(3, 3, -2, 90, False, False)
+        WayPoint(1.3, 3.5, -3, -30, False, True),
+        WayPoint(4.2, 0, -3, -30, False, True),
+        WayPoint(4.2, 0, -3, 60, False, False)
     ]
 
     STAGE3_WP = [
-        WayPoint(3, 37, -2, 90, False, False),
-        WayPoint(3, 37, -2, 0, False, True),
-        WayPoint(21, 37, -2, 0, False, True),
-        WayPoint(21, 37, -2, -90, False, False),
-        WayPoint(21, 20, -2, -90, False, False),
+        WayPoint(17.3, 37, -3, 60, False, False),
+        WayPoint(17.3, 37, -3, -30, False, True),
+        WayPoint(30, 30, -3, -30, False, True),
+        WayPoint(30, 30, -3, -120, False, False),
+        WayPoint(24.4, 6, -3, -120, False, False),
     ]
 
     STAGE4_WP = [
-        WayPoint(21, 20, -2, -90, False, True),
-        WayPoint(26, 18, -2, -90, True, True),
+        WayPoint(24.4, 6, -3, -120, False, True),
+        WayPoint(28.1, 1.6, -3, -120, True, True),
     ]
 
     STAGE5_WP = [
-        WayPoint(20, 20, -2, -90, False, True),
-        WayPoint(3, 3, -2, -90, False, True),
-        WayPoint(3, 3, -2, 0, False, True),
+        WayPoint(24.4, 6, -3, -120, False, True),
+        WayPoint(4.2, 0, -3, -120, False, True),
+        WayPoint(4.2, 0, -3, -30, False, True),
     ]
 
     def __init__(self, logger, dm: DroneManager):
