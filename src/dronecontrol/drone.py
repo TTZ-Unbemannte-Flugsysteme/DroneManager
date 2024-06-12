@@ -435,7 +435,7 @@ class DroneMAVSDK(Drone):
             if name == "kira":
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
-        self.trajectory_gen = GMP3Gen(self, 1/self._position_update_freq)
+        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
 
     def __del__(self):
         self.system.__del__()
@@ -510,7 +510,7 @@ class DroneMAVSDK(Drone):
                 self.logger.debug(f"Starting up own MAVSDK Server instance with app port {self.server_port} and remote "
                                   f"connection {mavsdk_passthrough_string}")
             if self.server_addr is None and platform.system() == "Windows":
-                self._server_process = Popen(f".\\mavsdk_server_bin.exe -p {self.server_port} {mavsdk_passthrough_string}",
+                self._server_process = Popen(f"{_mav_server_file} -p {self.server_port} {mavsdk_passthrough_string}",
                                              stdout=DEVNULL, stderr=DEVNULL)
                 self.server_addr = "127.0.0.1"
             self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
@@ -718,7 +718,7 @@ class DroneMAVSDK(Drone):
         await super().takeoff(altitude=altitude)
         self._can_takeoff()
         target_pos_yaw = self._get_pos_ned_yaw()
-        target_pos_yaw[2] = altitude
+        target_pos_yaw[2] = target_pos_yaw[2] + altitude
         await self.set_setpoint_pos_ned(target_pos_yaw)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
@@ -1206,7 +1206,7 @@ class GMP3Gen(TrajectoryGenerator):
             Q11=1.6,
             Q22=1.6,
             Q12=8,
-            obstacles=[(1.0, 1.0, 1.0)],
+            obstacles=[(0.0, 5.0, 1.0), (5.0, 0.0, 1.0)],
         )
         self.gmp3 = GMP3(self.config)
         self.waypoints = None

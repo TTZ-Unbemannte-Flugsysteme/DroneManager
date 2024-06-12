@@ -340,7 +340,7 @@ class GMP3:
            # theta[:, i+1] = theta[:, i] + self.alpha * grad
 
             # Ensure theta values are clamped between x_in and x_f2
-            theta[:, i+1] = np.clip(theta[:, i+1], self.x_in, self.x_f2)
+            #theta[:, i+1] = np.clip(theta[:, i+1], self.x_in, self.x_f2)
 
             # Calculate cost and violation for the new theta values at i+1
             jj, V = self.Cost(Xobs, Yobs, robs, self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2, theta[:, i+1])
