@@ -92,8 +92,8 @@ class RedCross:
 
     def formation_line(self, waypoint: WayPoint) -> list[tuple[float, float, float, float]]:
         # Returns a list with position_yaw coordinates for each drone
-        forward = 4
-        right = 0
+        forward = 3.46
+        right = -2
         altitudes = self.altitudes(waypoint.offset_altitudes)
         position_yaw_local_drones = [(waypoint.x + forward*i,
                                       waypoint.y + right*i,
