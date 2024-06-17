@@ -39,13 +39,13 @@ class RedCross:
 
     STAGE2_WP = [
         WayPoint(1.3, 3.5, -3, -30, False, True),
-        WayPoint(4.2, 0, -3, -30, False, True),
-        WayPoint(4.2, 0, -3, 60, False, False)
+        WayPoint(4.2, 2, -3, -30, False, True),
+        WayPoint(4.2, 2, -3, 60, False, False)
     ]
 
     STAGE3_WP = [
-        WayPoint(17.3, 37, -3, 60, False, False),
-        WayPoint(17.3, 37, -3, -30, False, True),
+        WayPoint(17.3, 35, -3, 60, False, False),
+        WayPoint(17.3, 35, -3, -30, False, True),
         WayPoint(30, 30, -3, -30, False, True),
         WayPoint(30, 30, -3, -120, False, False),
         WayPoint(24.4, 6, -3, -120, False, False),
@@ -58,8 +58,8 @@ class RedCross:
 
     STAGE5_WP = [
         WayPoint(24.4, 6, -3, -120, False, True),
-        WayPoint(4.2, 0, -3, -120, False, True),
-        WayPoint(4.2, 0, -3, -30, False, True),
+        WayPoint(4.2, 2, -3, -120, False, True),
+        WayPoint(4.2, 2, -3, -30, False, True),
     ]
 
     def __init__(self, logger, dm: DroneManager):
@@ -92,7 +92,7 @@ class RedCross:
 
     def formation_line(self, waypoint: WayPoint) -> list[tuple[float, float, float, float]]:
         # Returns a list with position_yaw coordinates for each drone
-        forward = 3.46
+        forward = 4.96
         right = -2
         altitudes = self.altitudes(waypoint.offset_altitudes)
         position_yaw_local_drones = [(waypoint.x + forward*i,
