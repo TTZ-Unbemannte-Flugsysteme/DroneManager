@@ -124,6 +124,7 @@ Bar {
 class CommandScreen(Screen):
     # TODO: Make the CSS better, change widths and whatever dynamically
     # TODO: Print a pretty usage/command overview thing somewhere.
+    # TODO: Currently you can enter commands after going "exit", need to prevent that
 
     # How often the drone overview screen is updated.
     STATUS_REFRESH_RATE = 20
@@ -163,6 +164,7 @@ class CommandScreen(Screen):
             description="Interactive command line interface to connect and control multiple drones")
         subparsers = self.parser.add_subparsers(title="command",
                                                 description="Command to execute.", dest="command")
+
         connect_parser = subparsers.add_parser("connect", help="Connect a drone")
         connect_parser.add_argument("drone", type=str, help="Name for the drone.")
         connect_parser.add_argument("drone_address", type=str, nargs='?',
@@ -175,6 +177,12 @@ class CommandScreen(Screen):
                                     help="Port for the mavsdk server. Default 50051.")
         connect_parser.add_argument("-t", "--timeout", type=float, default=5, required=False,
                                     help="Timeout in seconds for connection attempts.")
+
+        disconnect_parser = subparsers.add_parser("disconnect", help="Disconnect one or more drones.")
+        disconnect_parser.add_argument("drones", type=str, nargs="+", help="Which drones to disconnect.")
+        disconnect_parser.add_argument("-f", "--force", action="store_true",
+                                       help="If this flag is set, ignore any potential checks and force the disconnect.")
+
         arm_parser = subparsers.add_parser("arm", help="Arm the named drone(s).")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
         arm_parser.add_argument("-s", "--schedule", action="store_true",
@@ -205,6 +213,8 @@ class CommandScreen(Screen):
                                    help="Target yaw in degrees. Default 0.")
         fly_to_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
                                    help="Position tolerance")
+        fly_to_parser.add_argument("-s", "--schedule", action="store_true",
+                                   help="Queue this action instead of executing immediately.")
 
         fly_to_gps_parser = subparsers.add_parser("flytogps", help="Send the drone to a GPS coordinate")
         fly_to_gps_parser.add_argument("drone", type=str, help="Name of the drone")
@@ -215,6 +225,8 @@ class CommandScreen(Screen):
                                        help="Target yaw in degrees. Default 0.")
         fly_to_gps_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
                                        help="Position tolerance")
+        fly_to_gps_parser.add_argument("-s", "--schedule", action="store_true",
+                                       help="Queue this action instead of executing immediately.")
 
         move_parser = subparsers.add_parser("move", help="Send the drones x, y, z meters north, east or down.")
         move_parser.add_argument("drone", type=str, help="Name of the drone")
@@ -229,14 +241,16 @@ class CommandScreen(Screen):
                                  help="If this flag is set we move using the drones local coordinate system.")
         move_parser.add_argument("-t", "--tolerance", type=float, required=False, default=0.25,
                                  help="Position tolerance")
+        move_parser.add_argument("-s", "--schedule", action="store_true",
+                                 help="Queue this action instead of executing immediately.")
 
-        fly_circle_parser = subparsers.add_parser("orbit", help="Fly in a circle, facing the center point")
-        fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
-        fly_circle_parser.add_argument("radius", type=float, help="Radius of the circle")
-        fly_circle_parser.add_argument("vel", type=float, help="Target velocity (negative for opposite direction)")
-        fly_circle_parser.add_argument("center_lat", type=float, help="Latitude of the center of the circle")
-        fly_circle_parser.add_argument("center_long", type=float, help="Longitude of the center of the circle")
-        fly_circle_parser.add_argument("amsl", type=float, help="Altitude in terms of AMSL.")
+        #fly_circle_parser = subparsers.add_parser("orbit", help="Fly in a circle, facing the center point")
+        #fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
+        #fly_circle_parser.add_argument("radius", type=float, help="Radius of the circle")
+        #fly_circle_parser.add_argument("vel", type=float, help="Target velocity (negative for opposite direction)")
+        #fly_circle_parser.add_argument("center_lat", type=float, help="Latitude of the center of the circle")
+        #fly_circle_parser.add_argument("center_long", type=float, help="Longitude of the center of the circle")
+        #fly_circle_parser.add_argument("amsl", type=float, help="Altitude in terms of AMSL.")
 
         land_parser = subparsers.add_parser("land", help="Land the drone(s)")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
@@ -257,6 +271,8 @@ class CommandScreen(Screen):
                                                          "drones are listed, kills all of them.")
         kill_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to kill.")
 
+        exit_parser = subparsers.add_parser("exit", help="Exits the application")
+
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
         status_field = self.query_one("#status", expect_type=VerticalScroll)
@@ -271,7 +287,10 @@ class CommandScreen(Screen):
         await status_field.mount(drone_status_widget)
 
     async def _remove_drone_object(self, name):
-        await self.drone_widgets[name].remove()
+        try:
+            await self.drone_widgets[name].remove()
+        except KeyError:
+            pass
 
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
@@ -299,6 +318,8 @@ class CommandScreen(Screen):
                         address = "udp://:14540"
                     tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
                                                                        args.server_port, address, args.timeout))
+                case "disconnect":
+                    tmp = asyncio.create_task(self.dm.disconnect(args.drones, force=args.force))
                 case "arm":
                     tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
                 case "disarm":
@@ -309,16 +330,17 @@ class CommandScreen(Screen):
                     tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
                 case "flyto":
                     tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
-                                                             tol=args.tolerance))
+                                                             tol=args.tolerance, schedule=args.schedule))
                 case "flytogps":
                     tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                                 tol=args.tolerance))
+                                                                 tol=args.tolerance, schedule=args.schedule))
                 case "move":
                     tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw,
-                                                           no_gps=args.nogps, tol=args.tolerance))
-                case "orbit":
-                    tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
-                                                            args.center_long, args.amsl))
+                                                           no_gps=args.nogps, tol=args.tolerance,
+                                                           schedule=args.schedule))
+                #case "orbit":
+                #    tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
+                #                                            args.center_long, args.amsl))
                 case "land":
                     tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
                 case "pause":
@@ -326,7 +348,7 @@ class CommandScreen(Screen):
                 case "resume":
                     tmp = asyncio.create_task(self.dm.resume(args.drones))
                 case "stop":
-                    tmp = asyncio.create_task(self.action_stop(args.drones))
+                    tmp = asyncio.create_task(self.dm.action_stop(args.drones))
                 case "kill":
                     if not args.drones:
                         if self._kill_counter:
@@ -336,23 +358,25 @@ class CommandScreen(Screen):
                             self._kill_counter += 1
                     else:
                         tmp = asyncio.create_task(self.dm.kill(args.drones))
+                case "exit":
+                    tmp = asyncio.create_task(self.exit())
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
 
-    async def action_stop(self, names):
-        stop_app = False
-        if not names:
-            stop_app = True
-        results = await self.dm.action_stop(names)
-        for i, result in enumerate(results):
-            # If one of the drones encounters an excepton
-            if isinstance(result, Exception):
-                stop_app = False
-        if stop_app:
-            self.logger.info("All drones stopped, exiting...")
-            await asyncio.sleep(2)  # Beauty pause
-            self.app.exit()
+    async def exit(self):
+        """ Checks if any drones are armed and exits the app if not."""
+        stop_app = True
+        try:
+            for name in self.dm.drones:
+                if self.dm.drones[name].is_armed:
+                    stop_app = False
+            if stop_app:
+                self.logger.info("Exiting...")
+                await asyncio.sleep(2)  # Beauty pause
+                self.app.exit()
+        except Exception as e:
+            self.logger.error(f"{repr(e)}", exc_info=True)
 
     def _schedule_initialization_tasks(self):
         asyncio.create_task(self._logging_setup())

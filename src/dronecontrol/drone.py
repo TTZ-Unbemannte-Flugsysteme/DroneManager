@@ -19,6 +19,7 @@ from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
+from mavsdk.gimbal import GimbalError
 
 from dronecontrol.mavpassthrough import MAVPassthrough
 
@@ -109,9 +110,6 @@ class Drone(ABC, threading.Thread):
         while not self.should_stop:
             pass
 
-    def __del__(self):
-        self.stop_execution()
-
     async def _task_scheduler(self):
         while True:
             while len(self.action_queue) > 0:
@@ -145,12 +143,13 @@ class Drone(ABC, threading.Thread):
         self.logger.addHandler(handler)
         self.logging_handlers.append(handler)
 
+    @abstractmethod
     async def stop_execution(self):
-        """ Stops all tasks, closes all connections, etc.
+        """ Stops the thread. This function should be called at the end of any implementing function.
 
         :return:
         """
-        pass
+        self.should_stop.set()
 
     def pause(self):
         """ Pause task execution by setting self.is_paused to True.
@@ -225,6 +224,10 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def connect(self, drone_addr):
+        pass
+
+    @abstractmethod
+    async def disconnect(self, force=False) -> bool:
         pass
 
     @abstractmethod
@@ -323,25 +326,11 @@ class Drone(ABC, threading.Thread):
 
     @abstractmethod
     async def stop(self) -> bool:
-        """
-        This function should be called at the end of the implementing function.
-
-        :return:
-        """
-        for handler in self.logging_handlers:
-            self.logger.removeHandler(handler)
-        return True
+        pass
 
     @abstractmethod
     async def kill(self) -> bool:
-        """
-        This function should be called at the end of the implementing function.
-
-        :return:
-        """
-        for handler in self.logging_handlers:
-            self.logger.removeHandler(handler)
-        return True
+        pass
 
     def clear_queue(self) -> None:
         """ Clears the action queue.
@@ -434,10 +423,6 @@ class DroneMAVSDK(Drone):
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
         self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
-
-    def __del__(self):
-        self.system.__del__()
-        super().__del__()
 
     @property
     def is_connected(self) -> bool:
@@ -542,6 +527,18 @@ class DroneMAVSDK(Drone):
             self.logger.debug(f"Exception during connection: {repr(e)}", exc_info=True)
         return False
 
+    async def disconnect(self, force=False):
+        self.clear_queue()
+        self.cancel_action()
+        if force or not self._is_armed:
+            if force:
+                self.logger.debug("Force disconnecting from drone...")
+            await self.stop_execution()
+            return True
+        else:
+            self.logger.warning("Can't disconnect from an armed drone!")
+            return False
+
     async def _schedule_update_tasks(self) -> None:
         self._running_tasks.append(asyncio.create_task(self._connect_check()))
         self._running_tasks.append(asyncio.create_task(self._arm_check()))
@@ -645,7 +642,7 @@ class DroneMAVSDK(Drone):
         timeout = 5
         self.logger.info("Arming!")
         await super().arm()
-        result = await self._action_error_wrapper(self.system.action.arm)
+        result = await self._error_wrapper(self.system.action.arm, ActionError)
         if result and not isinstance(result, Exception):
             start_time = time.time()
             while not self.is_armed:
@@ -662,7 +659,7 @@ class DroneMAVSDK(Drone):
         timeout = 5
         self.logger.info("Disarming!")
         await super().disarm()
-        result = await self._action_error_wrapper(self.system.action.disarm)
+        result = await self._error_wrapper(self.system.action.disarm, ActionError)
         if result and not isinstance(result, Exception):
             start_time = time.time()
             while self.is_armed:
@@ -700,7 +697,7 @@ class DroneMAVSDK(Drone):
         self.logger.info("Trying to take off...")
         await super().takeoff(altitude=altitude)
         self._can_takeoff()
-        result = await self._action_error_wrapper(self.system.action.takeoff)
+        result = await self._error_wrapper(self.system.action.takeoff, ActionError)
         if isinstance(result, Exception):
             self.logger.warning("Couldn't takeoff!")
         while self.flightmode is not FlightMode.TAKEOFF:
@@ -732,20 +729,20 @@ class DroneMAVSDK(Drone):
         await super().change_flight_mode(flightmode)
         result = False
         if flightmode == "hold":
-            result = await self._action_error_wrapper(self.system.action.hold)
+            result = await self._error_wrapper(self.system.action.hold, ActionError)
         elif flightmode == "offboard":
-            result = await self._offboard_error_wrapper(self.system.offboard.start)
+            result = await self._error_wrapper(self.system.offboard.start, OffboardError)
         elif flightmode == "return":
-            result = await self._action_error_wrapper(self.system.action.return_to_launch)
+            result = await self._error_wrapper(self.system.action.return_to_launch, ActionError)
         elif flightmode == "land":
-            result = await self._action_error_wrapper(self.system.action.land)
+            result = await self._error_wrapper(self.system.action.land, ActionError)
         elif flightmode == "takeoff":
             await self._can_takeoff()
-            result = await self._action_error_wrapper(self.system.action.takeoff)
+            result = await self._error_wrapper(self.system.action.takeoff, ActionError)
         elif flightmode == "position":
-            result = await self.__manual_control_error_wrapper(self.system.manual_control.start_position_control())
+            result = await self._error_wrapper(self.system.manual_control.start_position_control, ManualControlError)
         elif flightmode == "altitude":
-            result = await self.__manual_control_error_wrapper(self.system.manual_control.start_altitude_control())
+            result = await self._error_wrapper(self.system.manual_control.start_altitude_control, ManualControlError)
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
         if result and not isinstance(result, Exception):
@@ -757,12 +754,12 @@ class DroneMAVSDK(Drone):
     async def set_setpoint_pos_ned(self, setpoint):
         # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
         point_ned_yaw = PositionNedYaw(*setpoint)
-        return await self._offboard_error_wrapper(self.system.offboard.set_position_ned, point_ned_yaw)
+        return await self._error_wrapper(self.system.offboard.set_position_ned, OffboardError, point_ned_yaw)
 
     async def set_setpoint_pos_vel_ned(self, setpoint):
         point_ned_yaw = PositionNedYaw(*setpoint[:3], setpoint[-1])
         velocity_ned_yaw = VelocityNedYaw(*setpoint[3:])
-        return await self._offboard_error_wrapper(self.system.offboard.set_position_velocity_ned,
+        return await self._error_wrapper(self.system.offboard.set_position_velocity_ned, OffboardError,
                                                   point_ned_yaw, velocity_ned_yaw)
 
     async def set_setpoint_pos_vel_acc_ned(self, setpoint):
@@ -770,21 +767,22 @@ class DroneMAVSDK(Drone):
         point_ned_yaw = PositionNedYaw(*setpoint[:3], yaw)
         velocity_ned_yaw = VelocityNedYaw(*setpoint[3:6], yaw)
         acc_ned = AccelerationNed(*setpoint[6:9])
-        return await self._offboard_error_wrapper(self.system.offboard.set_position_velocity_acceleration_ned,
+        return await self._error_wrapper(self.system.offboard.set_position_velocity_acceleration_ned,
+                                                  OffboardError,
                                                   point_ned_yaw,
                                                   velocity_ned_yaw,
                                                   acc_ned)
 
     async def set_setpoint_vel_ned(self, setpoint):
         vel_yaw = VelocityNedYaw(*setpoint)
-        return await self._offboard_error_wrapper(self.system.offboard.set_velocity_ned, vel_yaw)
+        return await self._error_wrapper(self.system.offboard.set_velocity_ned, OffboardError, vel_yaw)
 
     async def set_setpoint_gps(self, setpoint):
         latitude, longitude, amsl, yaw = setpoint
         alt_type = PositionGlobalYaw.AltitudeType.AMSL
         position = PositionGlobalYaw(lat_deg=latitude, lon_deg=longitude, alt_m=amsl,
                                      yaw_deg=yaw, altitude_type=alt_type)
-        return await self._offboard_error_wrapper(self.system.offboard.set_position_global, position)
+        return await self._error_wrapper(self.system.offboard.set_position_global, OffboardError, position)
 
     def _can_do_in_air_commands(self):
         if not self.is_armed or not self.in_air:
@@ -959,23 +957,21 @@ class DroneMAVSDK(Drone):
         if not self.is_armed or not self.in_air:
             raise RuntimeError("Can't fly a landed or unarmed drone!")
         yaw_behaviour = OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER
-        await self._action_error_wrapper(self.system.action.do_orbit, radius, velocity, yaw_behaviour, center_lat,
-                                         center_long, amsl)
+        await self._error_wrapper(self.system.action.do_orbit, ActionError, radius, velocity, yaw_behaviour,
+                                         center_lat, center_long, amsl)
 
     async def land(self):
         self.logger.info("Trying to land...")
         await super().land()
         return await self._land_using_offbord_mode()
 
-    async def _land_using_offbord_mode(self, error_thresh=0.0001, min_time=1):
-        # TODO: Check that we have reached the ground in a more robust way
+    async def _land_using_offbord_mode(self, error_thresh=0.00001, min_time=1):
         self.logger.info("Landing!")
         ema_alt_error = 0
         going_down = True
-        old_pos = self.position_ned
+        old_alt = self.position_ned[2]
         start_time = time.time()
         target_pos = self._get_pos_ned_yaw()
-        target_pos[2] += 0.1
         await self.set_setpoint_pos_ned(target_pos)
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
@@ -986,12 +982,11 @@ class DroneMAVSDK(Drone):
         except Exception as e:
             self.logger.debug(f"Couldn't set message rate: {repr(e)}", exc_info=True)
         while going_down:
-            cur_pos = self.position_ned
-            ema_alt_error = dist_ned(cur_pos, old_pos) + 0.33 * ema_alt_error
+            cur_alt = self.position_ned[2]
+            ema_alt_error = (cur_alt - old_alt) + 0.33 * ema_alt_error
             if ema_alt_error < error_thresh and time.time() > start_time + min_time:
                 break
-            old_pos = cur_pos.copy()
-            cur_alt = self.position_ned[2]
+            old_alt = cur_alt
             target_pos[2] = cur_alt + 0.5
             await self.set_setpoint_pos_ned(target_pos)
             await asyncio.sleep(1/update_freq)
@@ -999,7 +994,7 @@ class DroneMAVSDK(Drone):
         return True
 
     async def _land_using_landmode(self):
-        result = await self._action_error_wrapper(self.system.action.land)
+        result = await self._error_wrapper(self.system.action.land, ActionError)
         if isinstance(result, Exception):
             self.logger.warning("Couldn't go into land mode")
         while self.flightmode is not FlightMode.LAND:
@@ -1012,6 +1007,10 @@ class DroneMAVSDK(Drone):
         return True
 
     async def stop_execution(self):
+        """ Stops all coroutines, closes all connections, etc.
+
+        :return:
+        """
         if self._passthrough:
             await self._passthrough.stop()
             del self._passthrough
@@ -1020,6 +1019,7 @@ class DroneMAVSDK(Drone):
             self._server_process.terminate()
         for handler in self.logging_handlers:
             self.logger.removeHandler(handler)
+        await super().stop_execution()
 
     async def stop(self):
         # Override whatever else is going on and land
@@ -1029,38 +1029,31 @@ class DroneMAVSDK(Drone):
             return True
         await self.land()
         await self.disarm()
-        await self.stop_execution()
         await super().stop()
         return True
 
     async def kill(self):
-        await self._action_error_wrapper(self.system.action.kill)
-        await self.stop_execution()
+        await self._error_wrapper(self.system.action.kill, ActionError)
         await super().kill()
         return True
 
+    # TODO: Camera/Gimbal handling
+    # Have to detect that a gimbal/camera exists somehow. This is a whole can of worms of configuration stuff
+    # Instead, probably just implement simple commands on the CLI first
+
+    async def point_gimbal_at(self, lat, long, amsl):
+        await self._error_wrapper(self.system.gimbal.set_roi_location, GimbalError, lat, long, amsl)
+
+    async def point_gimbal_at_relative(self, x, y, z):
+        lat, long, amsl = relative_gps(x, y, z, *self.position_global[:3])
+        await self.point_gimbal_at(lat, long, amsl)
+
     # MAVSDK Error wrapping functions
 
-    async def _action_error_wrapper(self, func, *args, **kwargs):
+    async def _error_wrapper(self, func, error_type, *args, **kwargs):
         try:
             await func(*args, **kwargs)
-        except ActionError as e:
-            self.logger.error(e._result.result_str)
-            return False
-        return True
-
-    async def _offboard_error_wrapper(self, func, *args, **kwargs):
-        try:
-            await func(*args, **kwargs)
-        except OffboardError as e:
-            self.logger.error(e._result.result_str)
-            return False
-        return True
-
-    async def __manual_control_error_wrapper(self, func, *args, **kwargs):
-        try:
-            await asyncio.wait_for(func(*args, **kwargs), timeout=5)
-        except ManualControlError as e:
+        except error_type as e:
             self.logger.error(e._result.result_str)
             return False
         return True

@@ -138,6 +138,24 @@ class DroneManager:
                     await self._remove_drone_object(name, drone)
                 return False
 
+    async def disconnect(self, names, force=False):
+        self.logger.info(f"Disconnecting {names} ...")
+        async with self.drone_lock:
+            for name in names:
+                try:
+                    drone = self.drones[name]
+                except KeyError:
+                    continue
+                try:
+                    disconnected = await drone.disconnect(force=force)
+                except Exception as e:
+                    disconnected = False
+                    self.logger.error(f"An error occurred during disconnect for {name}")
+                    self.logger.debug(repr(e), exc_info=True)
+                if disconnected:
+                    await self._remove_drone_object(name, drone)
+                    self.logger.info(f"Disconnected {name}")
+
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         try:
             coros = [action(self.drones[name], *args, **kwargs) for name in names]
@@ -204,22 +222,28 @@ class DroneManager:
             self.logger.error(repr(e))
             self.logger.debug(repr(e), exc_info=True)
 
-    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25):
+    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25, schedule=True):
         self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
         try:
             coro = self.drones[name].fly_to(lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
-            result = self.drones[name].schedule_task(coro)
+            if schedule:
+                result = self.drones[name].schedule_task(coro)
+            else:
+                result = self.drones[name].execute_task(coro)
             await result
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
         except Exception as e:
             self.logger.error(repr(e))
 
-    async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25):
+    async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
         self.logger.info(f"Queuing move by {(x, y, z)} for  {name}")
         try:
             coro = self.drones[name].move(x, y, z, yaw, use_gps=not no_gps, tolerance=tol)
-            result = self.drones[name].schedule_task(coro)
+            if schedule:
+                result = self.drones[name].schedule_task(coro)
+            else:
+                result = self.drones[name].execute_task(coro)
             await result
         except KeyError:
             self.logger.warning(f"No drone named {name}!")
@@ -236,34 +260,31 @@ class DroneManager:
             self.logger.error(repr(e))
 
     async def action_stop(self, names):
-        async with self.drone_lock:
-            if not names:
-                self.logger.info("Stopping all drones!")
-            else:
-                self.logger.info(f"Stopping {names}")
-            drones_to_stop = names if names else list(self.drones.keys())
-            results = await asyncio.gather(*[self._stop_drone(name) for name in drones_to_stop], return_exceptions=True)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    self.logger.critical(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
-                                         f"{repr(result)}!", exc_info=True)
-            return results
+        if not names:
+            self.logger.info("Stopping all drones!")
+        else:
+            self.logger.info(f"Stopping {names}")
+        drones_to_stop = names if names else list(self.drones.keys())
+        results = await asyncio.gather(*[self._stop_drone(name) for name in drones_to_stop], return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                self.logger.critical(f"During stopping, drone {drones_to_stop[i]} encountered an exception "
+                                     f"{repr(result)}!", exc_info=True)
+        return results
 
     async def kill(self, names):
-        async with self.drone_lock:
-            if not names:
-                self.logger.info("Killing all drones!")
-            else:
-                self.logger.info(f"Killing {names}")
-            drones_to_stop = names if names else list(self.drones.keys())
-            results = await asyncio.gather(*[self._kill_drone(name) for name in drones_to_stop], return_exceptions=True)
-            return results
+        if not names:
+            self.logger.info("Killing all drones!")
+        else:
+            self.logger.info(f"Killing {names}")
+        drones_to_stop = names if names else list(self.drones.keys())
+        results = await asyncio.gather(*[self._kill_drone(name) for name in drones_to_stop], return_exceptions=True)
+        return results
 
     async def _stop_drone(self, name):
         try:
             drone = self.drones[name]
             result = await drone.stop()
-            await self._remove_drone_object(name, drone)
             return result
         except KeyError:
             pass
@@ -272,7 +293,6 @@ class DroneManager:
         try:
             drone = self.drones[name]
             result = await drone.kill()
-            await self._remove_drone_object(name, drone)
             return result
         except KeyError:
             pass
@@ -288,12 +308,7 @@ class DroneManager:
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
         if drone is not None:
-            try:
-                drone.should_stop.set()
-                drone.__del__()
-                del drone
-            except Exception as e:
-                self.logger.error(repr(e), exc_info=True)
+            del drone
 
     def add_remove_func(self, func):
         self._on_drone_removal_coros.add(func)
