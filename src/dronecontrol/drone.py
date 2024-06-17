@@ -1060,7 +1060,6 @@ class DroneMAVSDK(Drone):
 
 
 class TrajectoryGenerator(ABC):
-    # TODO: Check that generator can produce setpoints/has path ready
 
     CAN_DO_GPS = False
     SETPOINT_TYPES = set()
@@ -1073,6 +1072,11 @@ class TrajectoryGenerator(ABC):
         self.use_gps = use_gps
         self.setpoint_type = setpointtype
         self.target_position: np.ndarray | None = None
+
+    @property
+    @abstractmethod
+    def is_ready(self) -> bool:
+        pass
 
     def set_target(self, point: np.ndarray):
         """ Sets the target position that we will try to fly towards.
@@ -1097,6 +1101,11 @@ class StaticWaypoints(TrajectoryGenerator):
 
     def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_NED):
         super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+        self._is_ready = True
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready
 
     def next_setpoint(self) -> np.ndarray:
         if self.use_gps:
@@ -1125,9 +1134,15 @@ class DirectFlightFacingForward(TrajectoryGenerator):
         self.max_acc_z = max_acc_z
         self.max_yaw_rate = max_yaw_rate
 
-        self.fudge_yaw = 1#2.5
+        self.fudge_yaw = 1
         self.fudge_xy = 1
         self.fudge_z = 1
+
+        self._is_ready = True
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready
 
     def next_setpoint(self):
         """ Always move towards target. Accelerates if we are slower than the max speed and have space to accelerate,
