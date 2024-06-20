@@ -435,7 +435,7 @@ class DroneMAVSDK(Drone):
             if name == "kira":
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
-        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
+        self.trajectory_gen = GMP3Gen(self, 1/self._position_update_freq)
 
     def __del__(self):
         self.system.__del__()
@@ -1201,8 +1201,8 @@ class GMP3Gen(TrajectoryGenerator):
             alpha=3,
             wdamp=0.999,
             delta=0.05,
-            vx_max=2,
-            vy_max=2,
+            vx_max=0.5,
+            vy_max=0.5,
             Q11=1.6,
             Q22=1.6,
             Q12=8,

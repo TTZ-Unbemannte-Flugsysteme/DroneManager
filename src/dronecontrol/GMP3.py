@@ -1,14 +1,19 @@
 import numpy as np
 
+
+# import scipy.stats as stats
+# import matplotlib.pyplot as plt
+# import matplotlib.animation as animation
+# from numpy import linalg as LA
+
 # Algorythem written by Dr. techn. Babak Salamat, OOP structure created by Tim Drouven
 # Date: 08.05.2024
 # Update: Class. 23.05.2024
 
-
 class GMP3Config:
     def __init__(self, maxit, alpha, wdamp, delta, vx_max, vy_max, Q11, Q22, Q12, obstacles=None):
         """
-        Initializes the configuration for the GMP3 algorithm using the GMP3Config class.
+        Initializes the configuration for the GMP3 algorithm using the GMP3Config class..
         Obstacles (list of tuples): List of coordinates (x, y, r)
         representing obstacles, if any and
 
@@ -17,13 +22,20 @@ class GMP3Config:
         self.alpha = alpha
         self.wdamp = wdamp
         self.delta = delta
+        # self.nobs   = nobs is now calculate by len(obstacles)
+        # self.x_in   = x_in
+        # self.y_in   = y_in
+        # self.x_f1   = x_f1
+        # self.y_f1   = y_f1
+        # self.x_f2   = x_f2
+        # self.y_f2   = y_f2
         self.vx_max = vx_max
         self.vy_max = vy_max
         self.Q11 = Q11
         self.Q22 = Q22
         self.Q12 = Q12
-        self.obstacles = obstacles if obstacles is not None else []
         self.nobs = len(obstacles)
+        self.obstacles = obstacles if obstacles is not None else []
         self.pathfound = []
         self.iterations_needed = []
 
@@ -135,7 +147,7 @@ class GMP3:
                             y - yobs[j]) ** 2)
             v = np.maximum(1 - d / (robs[j] + 0.3), 0)
 
-            Violation += 2.5 * np.mean(v) + 1.5 * np.std(v)
+            Violation += 1.5 * np.mean(v) + 0.8 * np.std(v)
         J = - (0.012 * quad + 1.6 * Violation)
         return J
 
@@ -191,7 +203,7 @@ class GMP3:
                             y - yobs[j]) ** 2)
             v = np.maximum(1 - d / (robs[j] + 0.3), 0)
 
-            Violation += 2.5 * np.mean(v) + 1.5 * np.std(v)
+            Violation += 1.5 * np.mean(v) + 0.8 * np.std(v)
         J = - (0.012 * quad + 1.6 * Violation)
         return J, Violation
 
@@ -270,8 +282,8 @@ class GMP3:
         self.y_f1 = finalposition[1]
         self.x_f2 = finalposition[0]
         self.y_f2 = finalposition[1]
-        self.tf = abs(self.x_f2 - self.x_in + 3) if abs(self.x_f2 - self.x_in + 3) > abs(
-            self.y_f2 - self.y_in + 3) else abs(self.y_f2 - self.y_in + 3)
+        self.tf = abs(self.x_f2 - self.x_in) + 3 if abs(self.x_f2 - self.x_in) + 3 > abs(
+            self.y_f2 - self.y_in) + 3 else abs(self.y_f2 - self.y_in) + 3
 
         theta = np.zeros((2 * self.nobs, self.maxit))
         x_values = np.linspace(self.x_in + 1, self.x_f1 - 1, self.nobs)
@@ -313,7 +325,7 @@ class GMP3:
         # Initialize variables for stopping criteria
         previous_value = float('inf')
         consecutive_no_improvement = 0
-        max_consecutive_no_improvement = 15  # Number of iterations to wait for improvement
+        max_consecutive_no_improvement = 25  # Number of iterations to wait for improvement
         gradient_tolerance = 1e-20  # Tolerance for gradient norm
 
         for i in range(self.maxit - 1):
@@ -330,14 +342,14 @@ class GMP3:
             # Dampen the learning rate
             self.alpha *= self.wdamp
 
-            m = beta1 * m + (1 - beta1) * (grad)
-            v = beta2 * v + (1 - beta2) * (grad) ** 2
+            m = beta1 * m + (1 - beta1) * (grad);
+            v = beta2 * v + (1 - beta2) * (grad) ** 2;
 
-            mhat = m / (1 - beta1 ** i + 1)
-            vhat = v / (1 - beta2 ** i + 1)
+            mhat = m / (1 - beta1 ** i + 1);
+            vhat = v / (1 - beta2 ** i + 1);
 
             # Update theta[:, i+1]
-            theta[:, i + 1] = theta[:, i] + (self.alpha * mhat / (np.sqrt(1 + vhat)))
+            theta[:, i + 1] = theta[:, i] + (self.alpha * mhat / (np.sqrt(1 + vhat)));
             # theta[:, i+1] = theta[:, i] + self.alpha * grad
 
             # Ensure theta values are clamped between x_in and x_f2
@@ -410,4 +422,3 @@ class GMP3:
         self.xdot = xdot
         self.ydot = ydot
         # return t, x, y, xdot, ydot
-
