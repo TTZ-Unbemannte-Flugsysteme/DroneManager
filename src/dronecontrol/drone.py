@@ -435,7 +435,7 @@ class DroneMAVSDK(Drone):
             if name == "kira":
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
-        self.trajectory_gen = GMP3Gen(self, 1/self._position_update_freq)
+        self.trajectory_gen = GMP3Gen(self, 1/self._position_update_freq, self.logger)
 
     def __del__(self):
         self.system.__del__()
@@ -1073,11 +1073,12 @@ class TrajectoryGenerator(ABC):
     CAN_DO_GPS = False
     SETPOINT_TYPES = set()
 
-    def __init__(self, drone: Drone, dt, use_gps=False, setpointtype: SetPointType = None):
+    def __init__(self, drone: Drone, dt, logger, use_gps=False, setpointtype: SetPointType = None):
         assert setpointtype in self.SETPOINT_TYPES, (f"Invalid setpoint type {setpointtype} "
                                                      f"for trajectory generator {self.__class__.__name__}")
         self.drone = drone
         self.dt = dt
+        self.logger = logger
         self.use_gps = use_gps
         self.setpoint_type = setpointtype
         self.target_position: np.ndarray | None = None
@@ -1103,8 +1104,8 @@ class StaticWaypoints(TrajectoryGenerator):
     CAN_DO_GPS = True
     SETPOINT_TYPES = {SetPointType.POS_NED, SetPointType.POS_GLOBAL}
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_NED):
-        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+    def __init__(self, drone, dt, logger, use_gps=False, setpointtype=SetPointType.POS_NED):
+        super().__init__(drone, dt, logger=logger, use_gps=use_gps, setpointtype=setpointtype)
 
     def next_setpoint(self) -> np.ndarray:
         if self.use_gps:
@@ -1124,9 +1125,9 @@ class DirectFlightFacingForward(TrajectoryGenerator):
     SETPOINT_TYPES = {SetPointType.VEL_NED}
     CAN_DO_GPS = False
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.VEL_NED,
+    def __init__(self, drone, dt, logger, use_gps=False, setpointtype=SetPointType.VEL_NED,
                  max_vel_h=1.0, max_vel_z=0.5, max_acc_h=0.5, max_acc_z=0.25, max_yaw_rate=20, ):
-        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+        super().__init__(drone, dt, logger=logger, use_gps=use_gps, setpointtype=setpointtype)
         self.max_vel_h = max_vel_h
         self.max_vel_z = max_vel_z
         self.max_acc_h = max_acc_h
@@ -1194,19 +1195,19 @@ class GMP3Gen(TrajectoryGenerator):
     SETPOINT_TYPES = {SetPointType.POS_VEL_NED}
     CAN_DO_GPS = False
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_VEL_NED):
-        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+    def __init__(self, drone, dt, logger, use_gps=False, setpointtype=SetPointType.POS_VEL_NED):
+        super().__init__(drone, dt, logger, use_gps=use_gps, setpointtype=setpointtype)
         self.config = GMP3Config(
             maxit=100,
             alpha=3,
             wdamp=0.999,
             delta=0.05,
-            vx_max=0.5,
-            vy_max=0.5,
+            vx_max=2.0,
+            vy_max=2.0,
             Q11=1.6,
             Q22=1.6,
             Q12=8,
-            obstacles=[(0.0, 5.0, 1.0), (5.0, 0.0, 1.0)],
+            obstacles=[(5.0, 5.0, 1.0), (7.0, 3.0, 1.0)],
         )
         self.gmp3 = GMP3(self.config)
         self.waypoints = None
@@ -1220,7 +1221,9 @@ class GMP3Gen(TrajectoryGenerator):
         ys = self.gmp3.y
         xdots = self.gmp3.xdot
         ydots = self.gmp3.ydot
-        self.waypoints = zip(ts, xs, ys, xdots, ydots)
+        self.waypoints = list(zip(ts, xs, ys, xdots, ydots))
+        self.logger.info(len(self.waypoints))
+        self.logger.info(self.waypoints[-1])
         self.start_time = time.time()
 
     def set_target(self, point: np.ndarray):
