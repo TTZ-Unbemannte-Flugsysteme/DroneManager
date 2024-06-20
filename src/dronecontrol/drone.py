@@ -394,7 +394,7 @@ class DroneMAVSDK(Drone):
     # can be used.
 
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=190):
-        Drone.__init__(self, name)
+        super().__init__(name)
         self.compid = compid
         self.system: System | None = None
         self.server_addr = mavsdk_server_address
@@ -423,7 +423,10 @@ class DroneMAVSDK(Drone):
             if name == "kira":
                 dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True, dialect=dialect)
-        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
+        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq, self.logger)
+
+        attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
+        self.logger.debug(f"Initialized Drone {self.name}, {self.__class__.__name__}:\n   {attr_string}")
 
     @property
     def is_connected(self) -> bool:
@@ -1096,11 +1099,22 @@ class TrajectoryGenerator(ABC):
     CAN_DO_GPS = False
     SETPOINT_TYPES = set()
 
-    def __init__(self, drone: Drone, dt, use_gps=False, setpointtype: SetPointType = None):
+    def __init__(self, drone: Drone, dt, logger, use_gps=False, setpointtype: SetPointType = None):
+        """
+
+        Should be called at the end of subclass constructors.
+
+        :param drone:
+        :param dt:
+        :param logger:
+        :param use_gps:
+        :param setpointtype:
+        """
         assert setpointtype in self.SETPOINT_TYPES, (f"Invalid setpoint type {setpointtype} "
                                                      f"for trajectory generator {self.__class__.__name__}")
         self.drone = drone
         self.dt = dt
+        self.logger = logger
         self.use_gps = use_gps
         self.setpoint_type = setpointtype
         self.target_position: np.ndarray | None = None
@@ -1131,9 +1145,11 @@ class StaticWaypoints(TrajectoryGenerator):
     CAN_DO_GPS = True
     SETPOINT_TYPES = {SetPointType.POS_NED, SetPointType.POS_GLOBAL}
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.POS_NED):
-        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+    def __init__(self, drone, dt, logger, use_gps=False, setpointtype=SetPointType.POS_NED):
+        super().__init__(drone, dt, logger=logger, use_gps=use_gps, setpointtype=setpointtype)
         self._is_ready = True
+        attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
+        self.logger.debug(f"Initialized trajectory generator {self.__class__.__name__}:\n   {attr_string}")
 
     @property
     def is_ready(self) -> bool:
@@ -1157,9 +1173,9 @@ class DirectFlightFacingForward(TrajectoryGenerator):
     SETPOINT_TYPES = {SetPointType.VEL_NED}
     CAN_DO_GPS = False
 
-    def __init__(self, drone, dt, use_gps=False, setpointtype=SetPointType.VEL_NED,
+    def __init__(self, drone, dt, logger, use_gps=False, setpointtype=SetPointType.VEL_NED,
                  max_vel_h=1.0, max_vel_z=0.5, max_acc_h=0.5, max_acc_z=0.25, max_yaw_rate=20, ):
-        super().__init__(drone, dt, use_gps=use_gps, setpointtype=setpointtype)
+        super().__init__(drone, dt, logger=logger, use_gps=use_gps, setpointtype=setpointtype)
         self.max_vel_h = max_vel_h
         self.max_vel_z = max_vel_z
         self.max_acc_h = max_acc_h
@@ -1171,6 +1187,8 @@ class DirectFlightFacingForward(TrajectoryGenerator):
         self.fudge_z = 1
 
         self._is_ready = True
+        attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
+        self.logger.debug(f"Initialized trajectory generator {self.__class__.__name__}:\n   {attr_string}")
 
     @property
     def is_ready(self) -> bool:
