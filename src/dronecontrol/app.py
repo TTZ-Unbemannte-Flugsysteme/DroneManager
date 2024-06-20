@@ -273,6 +273,19 @@ class CommandScreen(Screen):
 
         exit_parser = subparsers.add_parser("exit", help="Exits the application")
 
+        gimbal_rotate_parser = subparsers.add_parser("gimbal-rotate", help="Set the angles the gimbal should point to")
+        gimbal_rotate_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        gimbal_rotate_parser.add_argument("roll", type=float, help="Roll angle of the gimbal.")
+        gimbal_rotate_parser.add_argument("pitch", type=float, help="Pitch angle of the gimbal.")
+        gimbal_rotate_parser.add_argument("yaw", type=float, help="Yaw angle of the gimbal.")
+        gimbal_rotate_parser.add_argument("-s", "--schedule", action="store_true",
+                                          help="Queue this action instead of executing immediately.")
+
+        photo_parser = subparsers.add_parser("photo", help="Take a picture")
+        photo_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+        photo_parser.add_argument("-s", "--schedule", action="store_true",
+                                          help="Queue this action instead of executing immediately.")
+
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
         status_field = self.query_one("#status", expect_type=VerticalScroll)
@@ -344,9 +357,9 @@ class CommandScreen(Screen):
                 case "land":
                     tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
                 case "pause":
-                    tmp = asyncio.create_task(self.dm.pause(args.drones))
+                    self.dm.pause(args.drones)
                 case "resume":
-                    tmp = asyncio.create_task(self.dm.resume(args.drones))
+                    self.dm.resume(args.drones)
                 case "stop":
                     tmp = asyncio.create_task(self.dm.action_stop(args.drones))
                 case "kill":
@@ -360,6 +373,11 @@ class CommandScreen(Screen):
                         tmp = asyncio.create_task(self.dm.kill(args.drones))
                 case "exit":
                     tmp = asyncio.create_task(self.exit())
+                case "gimbal-rotate":
+                    tmp = asyncio.create_task(self.dm.gimbal_rotate_to(args.drone, args.roll, args.pitch, args.yaw,
+                                                                       schedule=args.schedule))
+                case "photo":
+                    tmp = asyncio.create_task(self.dm.take_picture(args.drone, schedule=args.schedule))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))

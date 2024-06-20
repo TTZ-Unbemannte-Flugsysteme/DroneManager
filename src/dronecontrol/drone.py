@@ -19,7 +19,8 @@ from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
-from mavsdk.gimbal import GimbalError
+from mavsdk.gimbal import GimbalError, ControlMode
+from mavsdk.camera import CameraError
 
 from dronecontrol.mavpassthrough import MAVPassthrough
 
@@ -421,7 +422,7 @@ class DroneMAVSDK(Drone):
             dialect = "cubepilot"
             if name == "kira":
                 dialect = "ardupilotmega"
-            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False, dialect=dialect)
+            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True, dialect=dialect)
         self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq)
 
     @property
@@ -472,6 +473,7 @@ class DroneMAVSDK(Drone):
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
         # If we use serial, loc is the path and appendix the baudrate, if we use udp it is IP and port
         scheme, loc, appendix = parse_address(string=drone_address)
+        sysid = 246
         self.drone_addr = f"{scheme}://{loc}:{appendix}"
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
         if self._passthrough:
@@ -496,7 +498,8 @@ class DroneMAVSDK(Drone):
                 self._server_process = Popen(f"{_mav_server_file} -p {self.server_port} {mavsdk_passthrough_string}",
                                              stdout=DEVNULL, stderr=DEVNULL)
                 self.server_addr = "127.0.0.1"
-            self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port, compid=self.compid)
+            self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port,
+                                 sysid=sysid, compid=self.compid)
 
             connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
@@ -550,6 +553,9 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._att_check()))
         self._running_tasks.append(asyncio.create_task(self._battery_check()))
         self._running_tasks.append(asyncio.create_task(self._status_check()))
+
+        self._running_tasks.append(asyncio.create_task(self._check_gimbal_control()))
+        self._running_tasks.append(asyncio.create_task(self._check_gimbal_attitude()))
 
     async def _configure_message_rates(self) -> None:
         try:
@@ -1041,12 +1047,38 @@ class DroneMAVSDK(Drone):
     # Have to detect that a gimbal/camera exists somehow. This is a whole can of worms of configuration stuff
     # Instead, probably just implement simple commands on the CLI first
 
+    async def _check_gimbal_attitude(self):
+        async for attitude in self.system.gimbal.attitude():
+            rpy = attitude.euler_angle_forward
+            self.logger.debug(f"Gimbal attitude: R:{rpy.roll_deg}, P: {rpy.pitch_deg}, Y: {rpy.yaw_deg}")
+
+    async def _check_gimbal_control(self):
+        async for gimbal_control in self.system.gimbal.control():
+            self.logger.debug(f"Gimbal control: {gimbal_control.control_mode} "
+                              f"P:{gimbal_control.sysid_primary_control}:{gimbal_control.compid_primary_control}, "
+                              f"S:{gimbal_control.sysid_secondary_control}:{gimbal_control.compid_secondary_control}")
+
     async def point_gimbal_at(self, lat, long, amsl):
-        await self._error_wrapper(self.system.gimbal.set_roi_location, GimbalError, lat, long, amsl)
+        return await self._error_wrapper(self.system.gimbal.set_roi_location, GimbalError, lat, long, amsl)
 
     async def point_gimbal_at_relative(self, x, y, z):
         lat, long, amsl = relative_gps(x, y, z, *self.position_global[:3])
-        await self.point_gimbal_at(lat, long, amsl)
+        return await self.point_gimbal_at(lat, long, amsl)
+
+    async def set_gimbal_angles(self, roll, pitch, yaw):
+        try:
+            self.logger.info("Taking control of gimbal...")
+            await self._error_wrapper(self.system.gimbal.take_control, GimbalError, ControlMode.PRIMARY)
+        except Exception:
+            pass
+        try:
+            self.logger.info("Setting gimbal angle...")
+            await self._error_wrapper(self.system.gimbal.set_angles, GimbalError, roll, pitch, yaw)
+        except Exception:
+            pass
+
+    async def take_picture(self):
+        await self._error_wrapper(self.system.camera.take_photo, CameraError)
 
     # MAVSDK Error wrapping functions
 

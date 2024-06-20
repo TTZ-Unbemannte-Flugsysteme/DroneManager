@@ -156,6 +156,25 @@ class DroneManager:
                     await self._remove_drone_object(name, drone)
                     self.logger.info(f"Disconnected {name}")
 
+    async def _single_drone_action(self, action, name, start_string, *args, schedule=False, **kwargs):
+        try:
+            coro = action(self.drones[name], *args, **kwargs)
+            if schedule:
+                self.logger.info("Queuing action: " + start_string)
+                result = self.drones[name].schedule_task(coro)
+            else:
+                self.logger.info(start_string)
+                result = self.drones[name].execute_task(coro)
+            await result
+            if isinstance(result, Exception):
+                self.logger.error(f"Couldn't execute command due to: {str(result)}")
+            return result
+        except KeyError:
+            self.logger.warning(f"No drone named {name}!")
+        except Exception as e:
+            self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
+
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         try:
             coros = [action(self.drones[name], *args, **kwargs) for name in names]
@@ -174,6 +193,7 @@ class DroneManager:
             self.logger.warning("No drones named {}!".format([name for name in names if name not in self.drones]))
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
 
     async def arm(self, names, schedule=False):
         return await self._multiple_drone_action(self.drone_class.arm, names,
@@ -197,58 +217,46 @@ class DroneManager:
         await self._multiple_drone_action(self.drone_class.land, names,
                                           "Landing drone(s) {}.", schedule=schedule)
 
-    async def pause(self, names):
+    def pause(self, names):
         self.logger.info(f"Pausing drone(s) {names}")
         for name in names:
             self.drones[name].pause()
 
-    async def resume(self, names):
+    def resume(self, names):
         self.logger.info(f"Resuming task execution for drone(s) {names}")
         for name in names:
             self.drones[name].resume()
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.25, schedule=True):
-        self.logger.info(f"Queueing move to {x, y, z, yaw} for {name}.")
-        try:
-            coro = self.drones[name].fly_to(x=x, y=y, z=z, yaw=yaw, tolerance=tol)
-            if schedule:
-                result = self.drones[name].schedule_task(coro)
-            else:
-                result = self.drones[name].execute_task(coro)
-            await result
-        except KeyError:
-            self.logger.warning(f"No drone named {name}!")
-        except Exception as e:
-            self.logger.error(repr(e))
-            self.logger.debug(repr(e), exc_info=True)
+        await self._single_drone_action(self.drone_class.fly_to, name,
+                                        f"Flying to {x, y, z} with heading {yaw} and tolerance {tol}",
+                                        schedule=schedule,
+                                        x=x, y=y, z=z, yaw=yaw, tolerance=tol)
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25, schedule=True):
-        self.logger.info(f"Queuing move to {(lat, long, alt)} for  {name}")
-        try:
-            coro = self.drones[name].fly_to(lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
-            if schedule:
-                result = self.drones[name].schedule_task(coro)
-            else:
-                result = self.drones[name].execute_task(coro)
-            await result
-        except KeyError:
-            self.logger.warning(f"No drone named {name}!")
-        except Exception as e:
-            self.logger.error(repr(e))
+        await self._single_drone_action(self.drone_class.fly_to, name,
+                                        f"Flying to {lat, long, alt} with heading {yaw} and tolerance {tol}",
+                                        schedule=schedule,
+                                        lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
 
     async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
-        self.logger.info(f"Queuing move by {(x, y, z)} for  {name}")
-        try:
-            coro = self.drones[name].move(x, y, z, yaw, use_gps=not no_gps, tolerance=tol)
-            if schedule:
-                result = self.drones[name].schedule_task(coro)
-            else:
-                result = self.drones[name].execute_task(coro)
-            await result
-        except KeyError:
-            self.logger.warning(f"No drone named {name}!")
-        except Exception as e:
-            self.logger.error(repr(e))
+        await self._single_drone_action(self.drone_class.move, name,
+                                        f"Moving by {x, y, z} and heading {yaw} and tolerance {tol}",
+                                        x, y, z, yaw,
+                                        schedule=schedule,
+                                        use_gps=not no_gps, tolerance=tol)
+
+    ### TEMP FUNCTIONS, GIMBAL AND CAMERA HANDLING IS VERY WIP
+
+    async def gimbal_rotate_to(self, name, roll, pitch, yaw, schedule=True):
+        await self._single_drone_action(self.drone_class.set_gimbal_angles, name,
+                                        f"Setting gimbal angles to R{roll}, P{pitch}, Y{yaw}",
+                                        roll, pitch, yaw,
+                                        schedule=schedule)
+
+    async def take_picture(self, name, schedule=True):
+        await self._single_drone_action(self.drone_class.take_picture, name, f"{name} capturing a picture",
+                                        schedule=schedule)
 
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:

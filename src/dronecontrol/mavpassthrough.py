@@ -16,7 +16,7 @@ formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - 
 class MAVPassthrough:
     def __init__(self, dialect="cubepilot", loggername="passthrough", log_messages=True):
         self.dialect = dialect
-        self.source_system = 245
+        self.source_system = 246
         self.source_component = 201
         self.con_drone_in: mavutil.mavudp | None = None
         self.con_gcs: mavutil.mavudp | None = None
@@ -159,7 +159,7 @@ class MAVPassthrough:
     def _process_message_for_return(self, msg):
         msg_id = msg._header.msgId  # msg.id is sometimes not set correctly.
         if msg_id == -1:
-            self.logger.debug(f"Message with BAD_DATE id, can't resend: {msg_id}, {msg.to_dict()}")
+            self.logger.debug(f"Message with BAD_DATA id, can't resend: {msg_id}, {msg.to_dict()}")
             return False
         if msg_id == -2:
             self.logger.debug(f"Message with unkown MAVLink ID, can't resend: {msg_id}, {msg.get_type()} "
