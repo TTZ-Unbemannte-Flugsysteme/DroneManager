@@ -359,25 +359,24 @@ def parse_address(string):
     Missing elements from the string or the other entries are replaced with defaults. These are udp, empty host and
     50051 for the scheme, host and port, respectively.
     """
-    parse_drone_addr = urlparse(string)
-    scheme = parse_drone_addr.scheme
-    loc = parse_drone_addr.hostname
-    append = parse_drone_addr.port
-    if scheme is None:
-        scheme = "udp"
-    if loc is None:
-        loc = ""
-    if loc == "localhost":
-        loc = ""
-    elif loc == "127.0.0.1":
-        loc = ""
-    if append is None:
-        append = 50051
+    scheme, rest = string.split("://")
     if scheme == "serial":
-        loc = parse_drone_addr.path
-        if loc == "":
-            loc = parse_drone_addr.netloc
-        loc, append = loc.split(":")
+        loc, append = rest.split(":")
+    else:
+        parse_drone_addr = urlparse(string)
+        scheme = parse_drone_addr.scheme
+        loc = parse_drone_addr.hostname
+        append = parse_drone_addr.port
+        if scheme is None:
+            scheme = "udp"
+        if loc is None:
+            loc = ""
+        if loc == "localhost":
+            loc = ""
+        elif loc == "127.0.0.1":
+            loc = ""
+        if append is None:
+            append = 50051
     return scheme, loc, append
 
 

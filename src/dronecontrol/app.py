@@ -30,7 +30,7 @@ DRONE_DICT = {
     "gavin":  "udp://192.168.1.35:14565",
     "corran": "udp://192.168.1.36:14566",
     "jaina":  "udp://192.168.1.37:14567",
-    "kira":   "serial://COM5:56700",
+    "kira":   "serial://COM5:460800",
 }
 
 UPDATE_RATE = 20  # How often the various screens update in Hz
