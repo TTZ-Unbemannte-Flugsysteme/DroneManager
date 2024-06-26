@@ -418,9 +418,7 @@ class DroneMAVSDK(Drone):
         if self.server_addr is not None:
             self._passthrough = None
         else:
-            dialect = "cubepilot"
-            if name == "kira":
-                dialect = "ardupilotmega"
+            dialect = "ardupilotmega"
             self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True, dialect=dialect)
         self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq, self.logger)
 
@@ -745,7 +743,7 @@ class DroneMAVSDK(Drone):
         elif flightmode == "land":
             result = await self._error_wrapper(self.system.action.land, ActionError)
         elif flightmode == "takeoff":
-            await self._can_takeoff()
+            self._can_takeoff()
             result = await self._error_wrapper(self.system.action.takeoff, ActionError)
         elif flightmode == "position":
             result = await self._error_wrapper(self.system.manual_control.start_position_control, ManualControlError)
@@ -1121,6 +1119,7 @@ class TrajectoryGenerator(ABC):
     @property
     @abstractmethod
     def is_ready(self) -> bool:
+        """ Indicates if the trajectory generator is ready to produce setpoints."""
         pass
 
     def set_target(self, point: np.ndarray):
