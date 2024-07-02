@@ -40,6 +40,8 @@ class DroneManager:
         self._on_drone_removal_coros = set()
         self._on_drone_connect_coros = set()
 
+        self.plugins = []
+
         if logger is None:
             self.logger = logging.getLogger("Manager")
             self.logger.setLevel(logging.DEBUG)

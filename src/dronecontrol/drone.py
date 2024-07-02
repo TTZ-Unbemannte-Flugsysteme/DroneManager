@@ -766,7 +766,7 @@ class DroneMAVSDK(Drone):
         point_ned_yaw = PositionNedYaw(*setpoint[:3], setpoint[-1])
         velocity_ned_yaw = VelocityNedYaw(*setpoint[3:])
         return await self._error_wrapper(self.system.offboard.set_position_velocity_ned, OffboardError,
-                                                  point_ned_yaw, velocity_ned_yaw)
+                                         point_ned_yaw, velocity_ned_yaw)
 
     async def set_setpoint_pos_vel_acc_ned(self, setpoint):
         yaw = setpoint[-1]
@@ -774,10 +774,10 @@ class DroneMAVSDK(Drone):
         velocity_ned_yaw = VelocityNedYaw(*setpoint[3:6], yaw)
         acc_ned = AccelerationNed(*setpoint[6:9])
         return await self._error_wrapper(self.system.offboard.set_position_velocity_acceleration_ned,
-                                                  OffboardError,
-                                                  point_ned_yaw,
-                                                  velocity_ned_yaw,
-                                                  acc_ned)
+                                         OffboardError,
+                                         point_ned_yaw,
+                                         velocity_ned_yaw,
+                                         acc_ned)
 
     async def set_setpoint_vel_ned(self, setpoint):
         vel_yaw = VelocityNedYaw(*setpoint)
@@ -964,7 +964,7 @@ class DroneMAVSDK(Drone):
             raise RuntimeError("Can't fly a landed or unarmed drone!")
         yaw_behaviour = OrbitYawBehavior.HOLD_FRONT_TO_CIRCLE_CENTER
         await self._error_wrapper(self.system.action.do_orbit, ActionError, radius, velocity, yaw_behaviour,
-                                         center_lat, center_long, amsl)
+                                  center_lat, center_long, amsl)
 
     async def land(self):
         self.logger.info("Trying to land...")
