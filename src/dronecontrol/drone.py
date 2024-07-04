@@ -411,7 +411,7 @@ class DroneMAVSDK(Drone):
         self._heading: float = math.nan
         self._batteries: dict[int, Battery] = {}
         self._running_tasks = []
-        self._position_update_freq = 10                     # How often (per second) go-to-position commands compute if they have arrived.
+        self._position_update_freq = 5                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
         # Can't use passthrough if we already have a mavsdk server running:
@@ -1048,15 +1048,17 @@ class DroneMAVSDK(Drone):
     # Instead, probably just implement simple commands on the CLI first
 
     async def _check_gimbal_attitude(self):
-        async for attitude in self.system.gimbal.attitude():
-            rpy = attitude.euler_angle_forward
-            self.logger.debug(f"Gimbal attitude: R:{rpy.roll_deg}, P: {rpy.pitch_deg}, Y: {rpy.yaw_deg}")
+        pass
+        #async for attitude in self.system.gimbal.attitude():
+        #    rpy = attitude.euler_angle_forward
+        #    self.logger.debug(f"Gimbal attitude: R:{rpy.roll_deg}, P: {rpy.pitch_deg}, Y: {rpy.yaw_deg}")
 
     async def _check_gimbal_control(self):
-        async for gimbal_control in self.system.gimbal.control():
-            self.logger.debug(f"Gimbal control: {gimbal_control.control_mode} "
-                              f"P:{gimbal_control.sysid_primary_control}:{gimbal_control.compid_primary_control}, "
-                              f"S:{gimbal_control.sysid_secondary_control}:{gimbal_control.compid_secondary_control}")
+        pass
+        #async for gimbal_control in self.system.gimbal.control():
+        #    self.logger.debug(f"Gimbal control: {gimbal_control.control_mode} "
+        #                      f"P:{gimbal_control.sysid_primary_control}:{gimbal_control.compid_primary_control}, "
+        #                      f"S:{gimbal_control.sysid_secondary_control}:{gimbal_control.compid_secondary_control}")
 
     async def point_gimbal_at(self, lat, long, amsl):
         return await self._error_wrapper(self.system.gimbal.set_roi_location, GimbalError, lat, long, amsl)
@@ -1078,7 +1080,8 @@ class DroneMAVSDK(Drone):
             pass
 
     async def take_picture(self):
-        await self._error_wrapper(self.system.camera.take_photo, CameraError)
+        self._passthrough.send_take_picture()
+        #await self._error_wrapper(self.system.camera.take_photo, CameraError)
 
     # MAVSDK Error wrapping functions
 

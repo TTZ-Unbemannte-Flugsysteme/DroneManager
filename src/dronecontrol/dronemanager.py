@@ -72,7 +72,7 @@ class DroneManager:
             self.logger.info(repr(e))
             return False
         if scheme == "serial":
-            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}")
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr} with baud {parsed_port}")
         else:
             self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}:{parsed_port}")
         drone = None
