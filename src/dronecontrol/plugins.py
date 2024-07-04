@@ -22,7 +22,8 @@ class Plugin(ABC):
 
     PREFIX = "abs"
 
-    def __init__(self, logger):
+    def __init__(self, dm, logger):
+        self.dm = dm
         self.logger = logger.getChild(self.__class__.__name__)
         self.cli_commands = {}
         self.background_functions = []
@@ -31,29 +32,3 @@ class Plugin(ABC):
     def start_background_functions(self):
         for coro in self.background_functions:
             self._running_tasks.append(asyncio.create_task(coro))
-
-
-class ManagerPlugin(Plugin):
-    """ Plugins for the drone manager class. Conceptually these handle functions for multiple drones, for example,
-    multiple drones interacting with a single mapping system.
-
-    """
-
-    PREFIX = "mng"
-
-    def __init__(self, logger, dm):
-        super().__init__(logger)
-        self.dm = dm
-
-
-class DronePlugin(Plugin):
-    """ Plugins for drone classes. These should address things for single drones, such as gimbals or cameras.
-
-    """
-
-    PREFIX = "drn"
-
-    def __init__(self, logger, drone):
-        super().__init__(logger)
-        self.drone = drone
-
