@@ -1,52 +1,59 @@
 """ Class for extra, loadable plugins.
 
-Plugins extend the functionality of DroneManager by providing extra functions. They can also register their own commands
-for the CLI.
+Plugins extend the functionality of DroneManager or Drone Classes by providing extra functions. They can also register
+their own commands to the CLI.
 """
-
+import asyncio
 from abc import ABC
 
 
 class Plugin(ABC):
+    """ Generic plugin class.
+
+    The attribute cli_commands is called by the DroneManager CLI (and could be called by other UIs) to populate their
+    interfaces. This is a dictionary with callable functions as values and human-readable names as keys. In DroneManager
+    the names are used together with the class prefix to determine the command, while the signature of the function is
+    used to populate the CLI parser.
+    The attribute background_functions should list coroutines that will run indefinitely, for example those
+    polling for status updates from a camera. They will be started during construction of the class object, usually
+    when the module is loaded. Note that these must be coroutines.
+
+    """
 
     PREFIX = "abs"
 
-    def __init__(self, dm, logger):
-        self.dm = dm
+    def __init__(self, logger):
         self.logger = logger.getChild(self.__class__.__name__)
-        self.dm.plugins.append(self)
         self.cli_commands = {}
         self.background_functions = []
+        self._running_tasks = []
 
-    def add_cli_command(self, command, func, help=""):
-        """ Add a command to the CLI. Using these functions is an alternative to defining the cli_commands attribute.
+    def start_background_functions(self):
+        for coro in self.background_functions:
+            self._running_tasks.append(asyncio.create_task(coro))
 
-        :param command: Name of the command. Will be prefixed by the plugin, i.e. for the abstract class the command in
-            the CLI would be "ABS-<name>"
-        :param func: The function called when the command is called
-        :param help: Help string for the command
-        :return:
-        """
-        if command in self.cli_commands:
-            raise RuntimeError(f"{self.__class__.__name__} tried to create CLI command {command}, but it already "
-                               f"exists!")
-        self.cli_commands[command] = {
-            "func": func,
-            "help": help,
-            "args": []
-        }
-        pass
 
-    def add_cli_command_arg(self, command, arg, **kwargs):
-        """ Add an argument to a CLI command. Only works on commands from this plugin. Using these functions is an
-        alternative to defining the cli_commands attribute.
+class ManagerPlugin(Plugin):
+    """ Plugins for the drone manager class. Conceptually these handle functions for multiple drones, for example,
+    multiple drones interacting with a single mapping system.
 
-        :param command: Which command this argument will be added to.
-        :param arg: Name of the argument
-        :param kwargs: These will be passed to the argparse constructor and can be used to configure the argument,
-            such as default values, how many values this argument accepts, etc.
-        :return:
-        """
-        if command not in self.cli_commands:
-            raise RuntimeError(f"Tried adding an argument to a command that doesn't exist!")
-        self.cli_commands[command]["args"].append({"arg": arg, **kwargs})
+    """
+
+    PREFIX = "mng"
+
+    def __init__(self, logger, dm):
+        super().__init__(logger)
+        self.dm = dm
+
+
+class DronePlugin(Plugin):
+    """ Plugins for drone classes. These should address things for single drones, such as gimbals or cameras.
+
+    """
+
+    PREFIX = "drn"
+
+    def __init__(self, logger, drone):
+        super().__init__(logger)
+        self.drone = drone
+

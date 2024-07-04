@@ -202,7 +202,7 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def connect(self, drone_addr):
+    async def connect(self, drone_addr, *args, **kwargs):
         pass
 
     @abstractmethod
@@ -343,12 +343,15 @@ class DroneMAVSDK(Drone):
     # What type of trajectory setpoints this classes fly_<> commands can follow. This limits what Trajectory generators
     # can be used.
 
-    def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051, compid=190):
+    def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051):
         super().__init__(name)
-        self.compid = compid
         self.system: System | None = None
         self.server_addr = mavsdk_server_address
         self.server_port = mavsdk_server_port
+        self.gcs_system_id = None
+        self.gcs_component_id = None
+        self.drone_system_id = None           # Populated during connection process
+        self.drone_component_id = None
         self._server_process: Popen | None = None
         self._is_connected: bool = False
         self._is_armed: bool = False
@@ -420,11 +423,12 @@ class DroneMAVSDK(Drone):
     def batteries(self) -> dict[int, Battery]:
         return self._batteries
 
-    async def connect(self, drone_address) -> bool:
+    async def connect(self, drone_address, system_id=0, component_id=0) -> bool:
         # If we are on windows, we can't rely on the MAVSDK to have the binary installed.
         # If we use serial, loc is the path and appendix the baudrate, if we use udp it is IP and port
+        self.gcs_system_id = system_id
+        self.gcs_component_id = component_id
         scheme, loc, appendix = parse_address(string=drone_address)
-        sysid = 246
         self.drone_addr = f"{scheme}://{loc}:{appendix}"
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
         if self._passthrough:
@@ -450,7 +454,7 @@ class DroneMAVSDK(Drone):
                                              stdout=DEVNULL, stderr=DEVNULL)
                 self.server_addr = "127.0.0.1"
             self.system = System(mavsdk_server_address=self.server_addr, port=self.server_port,
-                                 sysid=sysid, compid=self.compid)
+                                 sysid=system_id, compid=component_id)
 
             connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
@@ -468,6 +472,8 @@ class DroneMAVSDK(Drone):
                                       f"GCS: {self._passthrough.connected_to_gcs()}")
                     await asyncio.sleep(0.1)
                 self.logger.debug("Connected passthrough!")
+                self.drone_system_id = self._passthrough.drone_system
+                self.drone_component_id = self._passthrough.drone_component
 
             await connected
 
