@@ -5,23 +5,20 @@ import math
 import os.path
 from enum import Enum, auto
 import threading
-from haversine import inverse_haversine, haversine, Direction, Unit
 import platform
 import time
 from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
 
 import numpy as np
-from urllib.parse import urlparse
 
 from mavsdk import System
 from mavsdk.telemetry import FlightMode, FixType, StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
-from mavsdk.gimbal import GimbalError, ControlMode
-from mavsdk.camera import CameraError
 
+from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address
 from dronecontrol.mavpassthrough import MAVPassthrough
 
 import logging
@@ -37,25 +34,6 @@ common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(na
 # TODO: Consider how to determine mavlink dialect
 # TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
-
-
-def dist_ned(pos1, pos2):
-    return np.sqrt(np.sum((pos1 - pos2) ** 2, axis=0))
-
-
-def dist_gps(lat1, long1, alt1, lat2, long2, alt2):
-    dist_horiz = haversine((lat1, long1), (lat2, long2), unit=Unit.METERS)
-    dist_alt = alt1 - alt2
-    return math.sqrt(dist_horiz*dist_horiz + dist_alt*dist_alt)
-
-
-def relative_gps(north, east, up, lat, long, alt):
-    """ Given a NEU offset and a GPS position, calculate the GPS coordinates of the offset position."""
-    target_alt = alt + up
-    coords = (lat, long)
-    coords = inverse_haversine(coords, north, Direction.NORTH, unit=Unit.METERS)
-    target_lat, target_long = inverse_haversine(coords, east, Direction.EAST, unit=Unit.METERS)
-    return target_lat, target_long, target_alt
 
 
 class Battery:
@@ -353,33 +331,6 @@ class Drone(ABC, threading.Thread):
             self.current_action.cancel()
 
 
-def parse_address(string):
-    """ Used to ensure that udp://:14540, udp://localhost:14540 and udp://127.0.0.1:14540 are recognized as equivalent.
-
-    Missing elements from the string or the other entries are replaced with defaults. These are udp, empty host and
-    50051 for the scheme, host and port, respectively.
-    """
-    scheme, rest = string.split("://")
-    if scheme == "serial":
-        loc, append = rest.split(":")
-    else:
-        parse_drone_addr = urlparse(string)
-        scheme = parse_drone_addr.scheme
-        loc = parse_drone_addr.hostname
-        append = parse_drone_addr.port
-        if scheme is None:
-            scheme = "udp"
-        if loc is None:
-            loc = ""
-        if loc == "localhost":
-            loc = ""
-        elif loc == "127.0.0.1":
-            loc = ""
-        if append is None:
-            append = 50051
-    return scheme, loc, append
-
-
 class DroneMAVSDK(Drone):
 
     VALID_FLIGHTMODES = {"hold", "offboard", "return", "land", "takeoff", "position", "altitude"}
@@ -553,9 +504,6 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._att_check()))
         self._running_tasks.append(asyncio.create_task(self._battery_check()))
         self._running_tasks.append(asyncio.create_task(self._status_check()))
-
-        self._running_tasks.append(asyncio.create_task(self._check_gimbal_control()))
-        self._running_tasks.append(asyncio.create_task(self._check_gimbal_attitude()))
 
     async def _configure_message_rates(self) -> None:
         try:
@@ -1044,40 +992,6 @@ class DroneMAVSDK(Drone):
         return True
 
     # TODO: Camera/Gimbal handling
-    # Have to detect that a gimbal/camera exists somehow. This is a whole can of worms of configuration stuff
-    # Instead, probably just implement simple commands on the CLI first
-
-    async def _check_gimbal_attitude(self):
-        pass
-        #async for attitude in self.system.gimbal.attitude():
-        #    rpy = attitude.euler_angle_forward
-        #    self.logger.debug(f"Gimbal attitude: R:{rpy.roll_deg}, P: {rpy.pitch_deg}, Y: {rpy.yaw_deg}")
-
-    async def _check_gimbal_control(self):
-        pass
-        #async for gimbal_control in self.system.gimbal.control():
-        #    self.logger.debug(f"Gimbal control: {gimbal_control.control_mode} "
-        #                      f"P:{gimbal_control.sysid_primary_control}:{gimbal_control.compid_primary_control}, "
-        #                      f"S:{gimbal_control.sysid_secondary_control}:{gimbal_control.compid_secondary_control}")
-
-    async def point_gimbal_at(self, lat, long, amsl):
-        return await self._error_wrapper(self.system.gimbal.set_roi_location, GimbalError, lat, long, amsl)
-
-    async def point_gimbal_at_relative(self, x, y, z):
-        lat, long, amsl = relative_gps(x, y, z, *self.position_global[:3])
-        return await self.point_gimbal_at(lat, long, amsl)
-
-    async def set_gimbal_angles(self, roll, pitch, yaw):
-        try:
-            self.logger.info("Taking control of gimbal...")
-            await self._error_wrapper(self.system.gimbal.take_control, GimbalError, ControlMode.PRIMARY)
-        except Exception:
-            pass
-        try:
-            self.logger.info("Setting gimbal angle...")
-            await self._error_wrapper(self.system.gimbal.set_angles, GimbalError, roll, pitch, yaw)
-        except Exception:
-            pass
 
     async def take_picture(self):
         self._passthrough.send_take_picture()
