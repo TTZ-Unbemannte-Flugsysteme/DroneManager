@@ -1,17 +1,14 @@
 import numpy as np
-
-
-# import scipy.stats as stats
-# import matplotlib.pyplot as plt
-# import matplotlib.animation as animation
-# from numpy import linalg as LA
+from dataclasses import dataclass
+from scipy.interpolate import CubicSpline
 
 # Algorythem written by Dr. techn. Babak Salamat, OOP structure created by Tim Drouven
 # Date: 08.05.2024
 # Update: Class. 23.05.2024
 
+
 class GMP3Config:
-    def __init__(self, maxit, alpha, wdamp, delta, vx_max, vy_max, Q11, Q22, Q12, obstacles=None):
+    def __init__(self, maxit, alpha, wdamp, delta, vx_max, vy_max, Q11, Q22, Q12, dt, obstacles=None):
         """
         Initializes the configuration for the GMP3 algorithm using the GMP3Config class..
         Obstacles (list of tuples): List of coordinates (x, y, r)
@@ -34,6 +31,7 @@ class GMP3Config:
         self.Q11 = Q11
         self.Q22 = Q22
         self.Q12 = Q12
+        self.dt = dt
         self.nobs = len(obstacles)
         self.obstacles = obstacles if obstacles is not None else []
         self.pathfound = []
@@ -55,6 +53,7 @@ class GMP3:
         self.Q11 = gmpConfig.Q11
         self.Q22 = gmpConfig.Q22
         self.Q12 = gmpConfig.Q12
+        self.dt = gmpConfig.dt
         self.tf = None
         self.nobs = gmpConfig.nobs
         self.obstacles = gmpConfig.obstacles if gmpConfig.obstacles is not None else []
@@ -75,6 +74,7 @@ class GMP3:
         self.Yobs = []
         self.x = []
         self.y = []
+        self.t = []
         self.xdot = []
         self.ydot = []
         self.verbose = False
@@ -101,40 +101,44 @@ class GMP3:
         wx = theta[:half_n]
         wy = theta[half_n:]
         # Time parameters
-        Ts = 0.05
+        Ts = self.dt
         tf = self.tf
         t = np.arange(0, tf + Ts, Ts)
         k = len(t)
-        tt = np.linspace(0, tf, len(wx) + 3)
+        tt = np.linspace(0, tf, len(wx) + 2)
         # Interpolating the desired setpoints
-        XS = np.array([x_in] + list(wx) + [x_f1, x_f2])
-        YS = np.array([y_in] + list(wy) + [y_f1, y_f2])
-        rxd = np.interp(t, tt, XS)
-        ryd = np.interp(t, tt, YS)
+
+        XS = np.array([x_in] + list(wx) + [x_f2])
+        YS = np.array([y_in] + list(wy) + [y_f2])
+        cs_x = CubicSpline(tt, XS, bc_type='natural')
+        cs_y = CubicSpline(tt, YS, bc_type='natural')
+        rxd = cs_x(t)
+        ryd = cs_y(t)
+
         # Velocity calculation
-        vrxd = np.diff(rxd) / Ts
-        vryd = np.diff(ryd) / Ts
+        vrxd = cs_x(t, 1)  # First derivative with respect to t
+        vryd = cs_y(t, 1)
         vrxd = np.append(vrxd, 0)  # Append zero to maintain array size
         vryd = np.append(vryd, 0)
+
         # Define maximum velocities and control inputs
         vx_max = self.vx_max
         vy_max = self.vy_max
-        Ux = Uy = 3
+        Ux = Uy = 2.5
+
         # Initialize state and control input arrays
         x = x_in * np.ones(k)
         y = y_in * np.ones(k)
         xdot = np.zeros(k)
         ydot = np.zeros(k)
-        ux = np.zeros(k)
-        uy = np.zeros(k)
-        # Simulate control system response
-        for i in range(k - 1):
-            ux[i] = self.Control(xdot[i], (x[i] - rxd[i]) / Ux, (xdot[i] - vrxd[i]) / Ux, Ts, Ux, vx_max)
-            uy[i] = self.Control(ydot[i], (y[i] - ryd[i]) / Uy, (ydot[i] - vryd[i]) / Uy, Ts, Uy, vy_max)
-            xdot[i + 1] = xdot[i] + Ts * ux[i]
-            x[i + 1] = x[i] + (Ts / 2) * (xdot[i + 1] + xdot[i])
-            ydot[i + 1] = ydot[i] + Ts * uy[i]
-            y[i + 1] = y[i] + (Ts / 2) * (ydot[i + 1] + ydot[i])
+
+        # Calculate x, y, xdot, ydot
+        for i in range(1, k):
+            x[i] = x[i - 1] + vrxd[i - 1] * Ts
+            y[i] = y[i - 1] + vryd[i - 1] * Ts
+            xdot[i] = vrxd[i - 1]
+            ydot[i] = vryd[i - 1]
+
         # Evaluate trajectory's performance
         QQ = np.array([[self.Q11, self.Q12], [self.Q12, self.Q22]])
         quad = np.sum(QQ[0, 0] * np.diff(x) ** 2 + QQ[1, 1] * np.diff(y) ** 2 + 2 * QQ[0, 1] * np.diff(x) * np.diff(y))
@@ -145,10 +149,13 @@ class GMP3:
             d = np.sqrt(
                 QQ[0, 0] * (x - xobs[j]) ** 2 + QQ[1, 1] * (y - yobs[j]) ** 2 + QQ[0, 1] * (x - xobs[j]) ** 2 * (
                             y - yobs[j]) ** 2)
-            v = np.maximum(1 - d / (robs[j] + 0.3), 0)
+            v = np.maximum(1 - d / (robs[j] + 0.2), 0)
 
-            Violation += 1.5 * np.mean(v) + 0.8 * np.std(v)
-        J = - (0.012 * quad + 1.6 * Violation)
+            vvx = np.maximum((xdot / (self.vx_max)) - 1, 0)
+            vvy = np.maximum((ydot / (self.vy_max)) - 1, 0)
+
+            Violation += 1.5 * np.mean(v) + 1.5 * np.mean(vvx) + 1.1 * np.mean(vvy) + 0.06 * np.std(v)
+        J = - (0.1 * quad * (1 + 100 * Violation))
         return J
 
     def Cost(self, xobs, yobs, robs, x_in, y_in, x_f1, x_f2, y_f1, y_f2, theta):
@@ -157,40 +164,44 @@ class GMP3:
         wx = theta[:half_n]
         wy = theta[half_n:]
         # Time parameters
-        Ts = 0.05
+        Ts = self.dt
         tf = self.tf
         t = np.arange(0, tf + Ts, Ts)
         k = len(t)
-        tt = np.linspace(0, tf, len(wx) + 3)
+        tt = np.linspace(0, tf, len(wx) + 2)
         # Interpolating the desired setpoints
-        XS = np.array([x_in] + list(wx) + [x_f1, x_f2])
-        YS = np.array([y_in] + list(wy) + [y_f1, y_f2])
-        rxd = np.interp(t, tt, XS)
-        ryd = np.interp(t, tt, YS)
+
+        XS = np.array([x_in] + list(wx) + [x_f2])
+        YS = np.array([y_in] + list(wy) + [y_f2])
+        cs_x = CubicSpline(tt, XS, bc_type='natural')
+        cs_y = CubicSpline(tt, YS, bc_type='natural')
+        rxd = cs_x(t)
+        ryd = cs_y(t)
+
         # Velocity calculation
-        vrxd = np.diff(rxd) / Ts
-        vryd = np.diff(ryd) / Ts
+        vrxd = cs_x(t, 1)  # First derivative with respect to t
+        vryd = cs_y(t, 1)
         vrxd = np.append(vrxd, 0)  # Append zero to maintain array size
         vryd = np.append(vryd, 0)
+
         # Define maximum velocities and control inputs
         vx_max = self.vx_max
         vy_max = self.vy_max
-        Ux = Uy = 3
+        Ux = Uy = 2.5
+
         # Initialize state and control input arrays
         x = x_in * np.ones(k)
         y = y_in * np.ones(k)
         xdot = np.zeros(k)
         ydot = np.zeros(k)
-        ux = np.zeros(k)
-        uy = np.zeros(k)
-        # Simulate control system response
-        for i in range(k - 1):
-            ux[i] = self.Control(xdot[i], (x[i] - rxd[i]) / Ux, (xdot[i] - vrxd[i]) / Ux, Ts, Ux, vx_max)
-            uy[i] = self.Control(ydot[i], (y[i] - ryd[i]) / Uy, (ydot[i] - vryd[i]) / Uy, Ts, Uy, vy_max)
-            xdot[i + 1] = xdot[i] + Ts * ux[i]
-            x[i + 1] = x[i] + (Ts / 2) * (xdot[i + 1] + xdot[i])
-            ydot[i + 1] = ydot[i] + Ts * uy[i]
-            y[i + 1] = y[i] + (Ts / 2) * (ydot[i + 1] + ydot[i])
+
+        # Calculate x, y, xdot, ydot
+        for i in range(1, k):
+            x[i] = x[i - 1] + vrxd[i - 1] * Ts
+            y[i] = y[i - 1] + vryd[i - 1] * Ts
+            xdot[i] = vrxd[i - 1]
+            ydot[i] = vryd[i - 1]
+
         # Evaluate trajectory's performance
         QQ = np.array([[self.Q11, self.Q12], [self.Q12, self.Q22]])
         quad = np.sum(QQ[0, 0] * np.diff(x) ** 2 + QQ[1, 1] * np.diff(y) ** 2 + 2 * QQ[0, 1] * np.diff(x) * np.diff(y))
@@ -201,10 +212,13 @@ class GMP3:
             d = np.sqrt(
                 QQ[0, 0] * (x - xobs[j]) ** 2 + QQ[1, 1] * (y - yobs[j]) ** 2 + QQ[0, 1] * (x - xobs[j]) ** 2 * (
                             y - yobs[j]) ** 2)
-            v = np.maximum(1 - d / (robs[j] + 0.3), 0)
+            v = np.maximum(1 - d / (robs[j] + 0.2), 0)
 
-            Violation += 1.5 * np.mean(v) + 0.8 * np.std(v)
-        J = - (0.012 * quad + 1.6 * Violation)
+            vvx = np.maximum((xdot / (self.vx_max)) - 1, 0)
+            vvy = np.maximum((ydot / (self.vy_max)) - 1, 0)
+
+            Violation += 1.5 * np.mean(v) + 1.5 * np.mean(vvx) + 1.1 * np.mean(vvy) + 0.06 * np.std(v)
+        J = - (0.1 * quad * (1 + 100 * Violation))
         return J, Violation
 
     def Agents(self, xobs, yobs, robs, x_in, y_in, x_f1, x_f2, y_f1, y_f2, theta, delta, n):
@@ -227,49 +241,52 @@ class GMP3:
         wx = theta[:half_n]
         wy = theta[half_n:]
 
+        # vx_max = self.vx_max
+        # vy_max = self.vy_max
+        # Ux = Uy = 2.5
+
         # Time parameters
-        Ts = 0.05
+        Ts = self.dt
         tf = self.tf
         t = np.arange(0, tf + Ts, Ts)
         k = len(t)
 
-        tt = np.linspace(0, tf, len(wx) + 3)
+        tt = np.linspace(0, tf, len(wx) + 2)
 
-        # Interpolating the desired setpoints
-        XS = np.array([x_in] + list(wx) + [x_f1, x_f2])
-        YS = np.array([y_in] + list(wy) + [y_f1, y_f2])
-        rxd = np.interp(t, tt, XS)
-        ryd = np.interp(t, tt, YS)
+        XS = np.array([x_in] + list(wx) + [x_f2])
+        YS = np.array([y_in] + list(wy) + [y_f2])
+        cs_x = CubicSpline(tt, XS, bc_type='clamped')
+        cs_y = CubicSpline(tt, YS, bc_type='clamped')
+        rxd = cs_x(t)
+        ryd = cs_y(t)
 
-        # Calculate velocities
-        vrxd = np.gradient(rxd, t)
-        vryd = np.gradient(ryd, t)
+        # Velocity calculation
+        vrxd = cs_x(t, 1)  # First derivative with respect to t
+        vryd = cs_y(t, 1)
+        vrxd = np.append(vrxd, 0)  # Append zero to maintain array size
+        vryd = np.append(vryd, 0)
 
-        # Initialize arrays for states and control inputs
+        # Define maximum velocities and control inputs
+        # vx_max = self.vx_max
+        # vy_max = self.vy_max
+        # Ux = Uy = 2.5
+
+        # Initialize state and control input arrays
         x = x_in * np.ones(k)
         y = y_in * np.ones(k)
         xdot = np.zeros(k)
         ydot = np.zeros(k)
-        ux = np.zeros(k)
-        uy = np.zeros(k)
+        vvx = np.zeros(k)
+        vvy = np.zeros(k)
 
-        # Simulation loop
-        for i in range(k - 1):
-            ex = (x[i] - rxd[i]) / 3  # Ux is 3
-            ey = (y[i] - ryd[i]) / 3  # Uy is 3
-            ex_dot = (xdot[i] - vrxd[i]) / 3
-            ey_dot = (ydot[i] - vryd[i]) / 3
+        # Calculate x, y, xdot, ydot
+        for i in range(1, k):
+            x[i] = x[i - 1] + vrxd[i - 1] * Ts
+            y[i] = y[i - 1] + vryd[i - 1] * Ts
+            xdot[i] = vrxd[i - 1]
+            ydot[i] = vryd[i - 1]
 
-            ux[i] = self.Control(xdot[i], ex, ex_dot, Ts, 3, 2)  # Ux and vx_max
-            uy[i] = self.Control(ydot[i], ey, ey_dot, Ts, 3, 2)  # Uy and vy_max
-
-            xdot[i + 1] = xdot[i] + Ts * ux[i]
-            x[i + 1] = x[i] + Ts / 2 * (xdot[i + 1] + xdot[i])
-
-            ydot[i + 1] = ydot[i] + Ts * uy[i]
-            y[i + 1] = y[i] + Ts / 2 * (ydot[i + 1] + ydot[i])
-
-        return t, x, y, xdot, ydot, ux, uy
+        return t, x, y, xdot, ydot
 
     def calculate(self, startposition, finalposition):
         """
@@ -282,12 +299,12 @@ class GMP3:
         self.y_f1 = finalposition[1]
         self.x_f2 = finalposition[0]
         self.y_f2 = finalposition[1]
-        self.tf = abs(self.x_f2 - self.x_in) + 3 if abs(self.x_f2 - self.x_in) + 3 > abs(
-            self.y_f2 - self.y_in) + 3 else abs(self.y_f2 - self.y_in) + 3
+        self.tf = ((np.sqrt((self.x_f2 - self.x_in) ** 2 + (self.y_f2 - self.y_in) ** 2)) / (
+            np.sqrt((self.vx_max) ** 2 + (self.vy_max) ** 2))) * 2
 
         theta = np.zeros((2 * self.nobs, self.maxit))
-        x_values = np.linspace(self.x_in + 1, self.x_f1 - 1, self.nobs)
-        y_values = np.linspace(self.y_in + 1, self.y_f1 - 1, self.nobs)
+        x_values = np.linspace(self.x_in, self.x_f2, self.nobs)
+        y_values = np.linspace(self.y_in, self.y_f2, self.nobs)
         theta[:, 0] = np.concatenate([x_values, y_values])
 
         # Assuming necessary functions and config object are defined
@@ -314,19 +331,14 @@ class GMP3:
         # computedValue = 0
         m = 0
         v = 0
-        beta1 = 0.001
-        beta2 = 0.98
-
-        theta = np.zeros((2 * self.nobs, self.maxit))
-        x_values = np.linspace(self.x_in + 1, self.x_f1 - 1, self.nobs)
-        y_values = np.linspace(self.y_in + 1, self.y_f1 - 1, self.nobs)
-        theta[:, 0] = np.concatenate([x_values, y_values])
+        beta1 = 0.01
+        beta2 = 0.99
 
         # Initialize variables for stopping criteria
         previous_value = float('inf')
         consecutive_no_improvement = 0
         max_consecutive_no_improvement = 25  # Number of iterations to wait for improvement
-        gradient_tolerance = 1e-20  # Tolerance for gradient norm
+        gradient_tolerance = 1e-5  # Tolerance for gradient norm
 
         for i in range(self.maxit - 1):
 
@@ -364,16 +376,14 @@ class GMP3:
 
             if (V == 0 and abs(current_value - previous_value) < tolerance):
                 theta_opt = theta[:, i + 1]
-                t, x, y, xdot, ydot, ux, uy = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1,
-                                                           self.y_f2, theta_opt)
+                self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2, theta_opt)
                 self.pathfound = True
                 break  # Exit the loop if optimal conditions are met
 
             # Check if the gradient norm is below the tolerance
             if np.linalg.norm(grad) < gradient_tolerance:
                 theta_opt = theta[:, i + 1]
-                t, x, y, xdot, ydot, ux, uy = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1,
-                                                           self.y_f2, theta_opt)
+                self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2, theta_opt)
                 self.pathfound = True
                 break  # Exit the loop if gradient norm is very small
 
@@ -382,8 +392,8 @@ class GMP3:
                 consecutive_no_improvement += 1
                 if consecutive_no_improvement >= max_consecutive_no_improvement:
                     theta_opt = theta[:, i + 1]
-                    t, x, y, xdot, ydot, ux, uy = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1,
-                                                               self.y_f2, theta_opt)
+                    t, x, y, xdot, ydot = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2,
+                                                       theta_opt)
                     self.pathfound = True
                     break  # Exit the loop if no improvement over many iterations
             else:
@@ -408,8 +418,8 @@ class GMP3:
             if self.verbose == True:
                 print("No optimal theta found within the given iterations.")
 
-        t, x, y, xdot, ydot, ux, uy = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2,
-                                                   theta[:, i])
+        t, x, y, xdot, ydot = self.results(self.x_in, self.y_in, self.x_f1, self.x_f2, self.y_f1, self.y_f2,
+                                           theta[:, i])
 
         self.x = x
         self.y = y
@@ -421,4 +431,3 @@ class GMP3:
         self.Yobs = Yobs
         self.xdot = xdot
         self.ydot = ydot
-        # return t, x, y, xdot, ydot

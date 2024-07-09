@@ -19,7 +19,8 @@ dependencies = [
     "mavsdk",
     "pymavlink",
     "pyserial",
-    "haversine", ]
+    "haversine",
+    "scipy"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent", ]

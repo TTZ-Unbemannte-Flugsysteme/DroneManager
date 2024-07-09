@@ -10,6 +10,7 @@ import platform
 import time
 from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 from urllib.parse import urlparse
@@ -905,10 +906,10 @@ class DroneMAVSDK(Drone):
             if not self.trajectory_gen.CAN_DO_GPS:
                 raise RuntimeError("Trajectory generator can't use GPS coordinates!")
             self.trajectory_gen.use_gps = True
-            self.trajectory_gen.set_target(np.asarray([lat, long, amsl, yaw]))
+            await self.trajectory_gen.set_target(np.asarray([lat, long, amsl, yaw]))
         else:
             self.trajectory_gen.use_gps = False
-            self.trajectory_gen.set_target(np.asarray([x, y, z, yaw]))
+            await self.trajectory_gen.set_target(np.asarray([x, y, z, yaw]))
 
         while True:
             if not self.is_paused:
@@ -1127,7 +1128,7 @@ class TrajectoryGenerator(ABC):
     def is_ready(self) -> bool:
         pass
 
-    def set_target(self, point: np.ndarray):
+    async def set_target(self, point: np.ndarray):
         """ Sets the target position that we will try to fly towards.
 
         :param point: Target waypoint. Should be an array with shape (4,), where the first three entries are the
@@ -1258,14 +1259,15 @@ class GMP3Gen(TrajectoryGenerator):
         super().__init__(drone, dt, logger, use_gps=use_gps, setpointtype=setpointtype)
         self.GMP3_PARAMS = {
             "maxit": 100,
-            "alpha": 3,
-            "wdamp": 0.999,
-            "delta": 0.05,
-            "vx_max": 0.1,
-            "vy_max": 0.1,
-            "Q11": 1.6,
-            "Q22": 1.6,
-            "Q12": 8,
+            "alpha": 0.8,
+            "wdamp": 1,
+            "delta": 0.01,
+            "vx_max": 0.5,
+            "vy_max": 0.5,
+            "Q11": 0.7,
+            "Q22": 0.7,
+            "Q12": 0.01,
+            "dt": 1/drone._position_update_freq,
             "obstacles": [
                 (5.0, 5.0, 1.0),
                 (7.0, 3.0, 1.0)
@@ -1281,7 +1283,8 @@ class GMP3Gen(TrajectoryGenerator):
     def is_ready(self) -> bool:
         return self.waypoints is not None
 
-    def calculate_path(self):
+    async def calculate_path(self):
+        # TODO: Run this in a different thread, executor
         cur_x, cur_y, _ = self.drone.position_ned
         self.gmp3.calculate((cur_x, cur_y), (self.target_position[0], self.target_position[1]))
         ts = self.gmp3.t
@@ -1293,9 +1296,9 @@ class GMP3Gen(TrajectoryGenerator):
         self.start_time = time.time()
         self.logger.debug(f"Generated {len(self.waypoints)} waypoints: {self.waypoints}")
 
-    def set_target(self, point: np.ndarray):
-        super().set_target(point)
-        self.calculate_path()
+    async def set_target(self, point: np.ndarray):
+        await super().set_target(point)
+        await self.calculate_path()
 
     def next_setpoint(self) -> np.ndarray:
         current_waypoint = None
