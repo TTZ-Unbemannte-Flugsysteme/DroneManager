@@ -1269,8 +1269,9 @@ class GMP3Gen(TrajectoryGenerator):
             "Q12": 0.01,
             "dt": 1/drone._position_update_freq,
             "obstacles": [
-                (5.0, 5.0, 1.0),
-                (7.0, 3.0, 1.0)
+                (3.3, 1.8, 1.0),
+                (4.5, 4.2, 1.0),
+                (3.8, 7.4, 1.0)
             ],
         }
         self.config = GMP3Config(**self.GMP3_PARAMS)
@@ -1283,27 +1284,21 @@ class GMP3Gen(TrajectoryGenerator):
     def is_ready(self) -> bool:
         return self.waypoints is not None
 
-    async def calculate_path(self):
-        # TODO: Run this in a different thread, executor
-        cur_x, cur_y, _ = self.drone.position_ned
-        self.gmp3.calculate((cur_x, cur_y), (self.target_position[0], self.target_position[1]))
-        ts = self.gmp3.t
-        xs = self.gmp3.x
-        ys = self.gmp3.y
-        xdots = self.gmp3.xdot
-        ydots = self.gmp3.ydot
-        self.waypoints = list(zip(ts, xs, ys, xdots, ydots))
-        self.start_time = time.time()
-        self.logger.debug(f"Generated {len(self.waypoints)} waypoints: {self.waypoints}")
-
     async def set_target(self, point: np.ndarray):
         await super().set_target(point)
-        await self.calculate_path()
+        self.logger.info("Calculating path...")
+        cur_x, cur_y, _ = self.drone.position_ned
+        target_x, target_y, _, _ = point
+        with ProcessPoolExecutor(max_workers=2) as executor:
+            self.waypoints = await asyncio.get_running_loop().run_in_executor(executor, _calculate_path, cur_x, cur_y, target_x, target_y, self.gmp3)
+        self.logger.info("Found path!")
+        self.logger.debug(f"Generated {len(self.waypoints)} waypoints: {self.waypoints}")
+        self.start_time = time.time_ns()/1e9
 
     def next_setpoint(self) -> np.ndarray:
         current_waypoint = None
         for wp in self.waypoints:
-            if time.time() <= self.start_time + wp[0]:
+            if time.time_ns()/1e9 <= self.start_time + wp[0]:
                 current_waypoint = wp
                 break
         if current_waypoint is None:
@@ -1311,3 +1306,14 @@ class GMP3Gen(TrajectoryGenerator):
         t, x, y, xdot, ydot = current_waypoint
         setpoint = np.asarray([x, y, self.target_position[2], xdot, ydot, 0, self.target_position[3]])
         return setpoint
+
+
+def _calculate_path(cur_x, cur_y, target_x, target_y, gmp3):
+    gmp3.calculate((cur_x, cur_y), (target_x, target_y))
+    ts = gmp3.t
+    xs = gmp3.x
+    ys = gmp3.y
+    xdots = gmp3.xdot
+    ydots = gmp3.ydot
+    waypoints = list(zip(ts, xs, ys, xdots, ydots))
+    return waypoints
