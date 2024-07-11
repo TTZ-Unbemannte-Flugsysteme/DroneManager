@@ -5,6 +5,7 @@ import shlex
 
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import Drone, DroneMAVSDK
+from dronecontrol.utils import common_formatter
 
 import textual.css.query
 from textual import on, events
@@ -15,11 +16,9 @@ from textual.widget import Widget
 
 from dronecontrol.widgets import InputWithHistory, TextualLogHandler, DroneOverview, ArgParser, ArgumentParserError
 
-
 import logging
 
 
-common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
@@ -200,7 +199,7 @@ class CommandScreen(Screen):
 
         offboard_parser = subparsers.add_parser("mode", help="Change the drone(s) flight mode")
         offboard_parser.add_argument("mode", type=str,
-                                     help="Target flight mode. Must be one of {}.".format(self.dm.drone_class.VALID_FLIGHTMODES))
+                                     help=f"Target flight mode. Must be one of {self.dm.drone_class.VALID_FLIGHTMODES}.")
         offboard_parser.add_argument("drones", type=str, nargs="+",
                                      help="Drone(s) to change flight mode on.")
 
@@ -244,14 +243,6 @@ class CommandScreen(Screen):
         move_parser.add_argument("-s", "--schedule", action="store_true",
                                  help="Queue this action instead of executing immediately.")
 
-        #fly_circle_parser = subparsers.add_parser("orbit", help="Fly in a circle, facing the center point")
-        #fly_circle_parser.add_argument("drone", type=str, help="Name of the drone")
-        #fly_circle_parser.add_argument("radius", type=float, help="Radius of the circle")
-        #fly_circle_parser.add_argument("vel", type=float, help="Target velocity (negative for opposite direction)")
-        #fly_circle_parser.add_argument("center_lat", type=float, help="Latitude of the center of the circle")
-        #fly_circle_parser.add_argument("center_long", type=float, help="Longitude of the center of the circle")
-        #fly_circle_parser.add_argument("amsl", type=float, help="Altitude in terms of AMSL.")
-
         land_parser = subparsers.add_parser("land", help="Land the drone(s)")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
         land_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
@@ -284,7 +275,7 @@ class CommandScreen(Screen):
         photo_parser = subparsers.add_parser("photo", help="Take a picture")
         photo_parser.add_argument("drone", type=str, help="Which drones should take a picture")
         photo_parser.add_argument("-s", "--schedule", action="store_true",
-                                          help="Queue this action instead of executing immediately.")
+                                  help="Queue this action instead of executing immediately.")
 
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
@@ -351,9 +342,6 @@ class CommandScreen(Screen):
                     tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw,
                                                            no_gps=args.nogps, tol=args.tolerance,
                                                            schedule=args.schedule))
-                #case "orbit":
-                #    tmp = asyncio.create_task(self.dm.orbit(args.drone, args.radius, args.vel, args.center_lat,
-                #                                            args.center_long, args.amsl))
                 case "land":
                     tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
                 case "pause":

@@ -6,16 +6,14 @@ import asyncio
 
 from pymavlink import mavutil
 
-from pymavlink.dialects.v20 import ardupilotmega
-
-formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+from dronecontrol.utils import common_formatter
 
 # TODO: Routing between multiple GCS so we can have my app and QGroundControl connected at the same time
 # TODO: Implement sending as drone/drone components
 
 
 class MAVPassthrough:
-    def __init__(self, dialect="cubepilot", loggername="passthrough", log_messages=True):
+    def __init__(self, dialect=None, loggername="passthrough", log_messages=True):
         self.dialect = dialect
         self.source_system = 246
         self.source_component = 201
@@ -24,6 +22,7 @@ class MAVPassthrough:
 
         self.drone_system = 0
         self.drone_component = 0
+        self.drone_autopilot = None
         self.gcs_system = 0
         self.gcs_component = 0
 
@@ -39,7 +38,7 @@ class MAVPassthrough:
         os.makedirs(logdir, exist_ok=True)
         file_handler = logging.FileHandler(os.path.join(logdir, filename))
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(common_formatter)
         self.logger.addHandler(file_handler)
         self.logging_handlers = []
         self.logging_handlers.append(file_handler)
@@ -87,7 +86,7 @@ class MAVPassthrough:
 
             received_hb = 0
             while received_hb < 3:
-                self.logger.debug("Sending initial drone heartbeat")
+                self.logger.debug("Sending initial drone heartbeats")
                 tmp_con_drone_in.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
                                                     mavutil.mavlink.MAV_AUTOPILOT_INVALID,
                                                     0, 0, 0)
@@ -100,6 +99,15 @@ class MAVPassthrough:
                         self.drone_component = m.get_srcComponent()
                         self.logger.debug(f"Got drone {self.drone_system, self.drone_component} heartbeat! "
                                           f"Received {received_hb} total")
+                    if self.dialect is None:
+                        # Check whether we are connecting to ardupilot or PX4 and change dialect accordingly
+                        match m.autopilot:
+                            case 3:
+                                self.drone_autopilot = "ArduPilot"
+                                self.dialect = "ardupilotmega"
+                            case 14:
+                                self.drone_autopilot = "PX4"
+                                self.dialect = "cubepilot"
                 await asyncio.sleep(0.2)
 
             tmp_con_drone_in.close()

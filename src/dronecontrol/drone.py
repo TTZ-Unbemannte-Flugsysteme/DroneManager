@@ -18,7 +18,7 @@ from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
 
-from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address
+from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address, common_formatter
 from dronecontrol.mavpassthrough import MAVPassthrough
 
 import logging
@@ -27,8 +27,6 @@ _cur_dir = os.path.dirname(os.path.abspath(__file__))
 logdir = os.path.abspath("./logs")
 os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
-
-common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 # TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor
 # TODO: Consider how to determine mavlink dialect
@@ -81,6 +79,10 @@ class Drone(ABC, threading.Thread):
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(common_formatter)
             self.add_handler(file_handler)
+
+        self.position_update_rate: float = 10
+        self.trajectory_generator: TrajectoryGenerator | None = None
+
         self.is_paused = False
         self.start()
         asyncio.create_task(self._task_scheduler())
@@ -365,16 +367,15 @@ class DroneMAVSDK(Drone):
         self._heading: float = math.nan
         self._batteries: dict[int, Battery] = {}
         self._running_tasks = []
-        self._position_update_freq = 5                     # How often (per second) go-to-position commands compute if they have arrived.
+        self.position_update_rate = 5                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
         # Can't use passthrough if we already have a mavsdk server running:
         if self.server_addr is not None:
             self._passthrough = None
         else:
-            dialect = "ardupilotmega"
-            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True, dialect=dialect)
-        self.trajectory_gen = StaticWaypoints(self, 1/self._position_update_freq, self.logger)
+            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
+        self.trajectory_generator = StaticWaypoints(self, 1 / self.position_update_rate, self.logger)
 
         attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
         self.logger.debug(f"Initialized Drone {self.name}, {self.__class__.__name__}:\n   {attr_string}")
@@ -513,9 +514,9 @@ class DroneMAVSDK(Drone):
 
     async def _configure_message_rates(self) -> None:
         try:
-            await self.system.telemetry.set_rate_position(self._position_update_freq)
-            await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
-            await self.system.telemetry.set_rate_attitude_euler(self._position_update_freq)
+            await self.system.telemetry.set_rate_position(self.position_update_rate)
+            await self.system.telemetry.set_rate_position_velocity_ned(self.position_update_rate)
+            await self.system.telemetry.set_rate_attitude_euler(self.position_update_rate)
         except Exception as e:
             self.logger.warning(f"Couldn't set message rate!")
             self.logger.debug(f"{repr(e)}", exc_info=True)
@@ -524,7 +525,7 @@ class DroneMAVSDK(Drone):
         if self._passthrough:
             while True:
                 self._is_connected = self._passthrough.connected_to_drone() and self._passthrough.connected_to_gcs()
-                await asyncio.sleep(1/self._position_update_freq)
+                await asyncio.sleep(1 / self.position_update_rate)
         else:
             async for state in self.system.core.connection_state():
                 self._is_connected = state.is_connected
@@ -606,7 +607,7 @@ class DroneMAVSDK(Drone):
         if result and not isinstance(result, Exception):
             start_time = time.time()
             while not self.is_armed:
-                await asyncio.sleep(1 / self._position_update_freq)
+                await asyncio.sleep(1 / self.position_update_rate)
                 if time.time() - start_time > timeout:
                     self.logger.warning("Arming timed out!")
                     return False
@@ -623,7 +624,7 @@ class DroneMAVSDK(Drone):
         if result and not isinstance(result, Exception):
             start_time = time.time()
             while self.is_armed:
-                await asyncio.sleep(1 / self._position_update_freq)
+                await asyncio.sleep(1 / self.position_update_rate)
                 if time.time() - start_time > timeout:
                     self.logger.warning("Disarming timed out!")
                     return False
@@ -661,10 +662,10 @@ class DroneMAVSDK(Drone):
         if isinstance(result, Exception):
             self.logger.warning("Couldn't takeoff!")
         while self.flightmode is not FlightMode.TAKEOFF:
-            await asyncio.sleep(1/self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         self.logger.info("Taking off!")
         while self.flightmode is FlightMode.TAKEOFF:
-            await asyncio.sleep(1/self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         self.logger.info("Completed takeoff!")
         return True
 
@@ -682,7 +683,7 @@ class DroneMAVSDK(Drone):
             if self.is_at_pos(target_pos_yaw, tolerance=tolerance):
                 self.logger.info(f"Takeoff completed!")
                 return True
-            await asyncio.sleep(1 / self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
 
     async def change_flight_mode(self, flightmode: str):
         self.logger.info(f"Changing flight mode to {flightmode}")
@@ -765,16 +766,16 @@ class DroneMAVSDK(Drone):
         og_yaw = self.attitude[2]
         dif_yaw = (target_yaw - og_yaw + 180) % 360 - 180
         time_required = abs(dif_yaw / yaw_rate)
-        n_steps = math.ceil(time_required*self._position_update_freq)
+        n_steps = math.ceil(time_required * self.position_update_rate)
         step_size = dif_yaw/n_steps
         pos_yaw = np.asarray([x, y, z, 0], dtype=float)
         for i in range(n_steps):
             if not self.is_paused:
                 pos_yaw[3] = og_yaw + step_size*(i+1)
                 await self.set_setpoint_pos_ned(pos_yaw)
-            await asyncio.sleep(1/self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         while not self.is_at_heading(target_heading=target_yaw, tolerance=tolerance):
-            await asyncio.sleep(1/self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         return True
 
     async def spin_at_rate(self, yaw_rate, duration, direction="cw"):
@@ -826,7 +827,7 @@ class DroneMAVSDK(Drone):
             "Must provide a full set of either NED or GPS coordinates!"
 
         # Check that we have a trajectory generator whose output we can process
-        assert self.trajectory_gen is not None and self.trajectory_gen.setpoint_type in self.VALID_SETPOINT_TYPES
+        assert self.trajectory_generator is not None and self.trajectory_generator.setpoint_type in self.VALID_SETPOINT_TYPES
 
         # Use GPS if GPS coordinates are provided
         use_gps = lat is not None and long is not None and amsl is not None
@@ -851,20 +852,20 @@ class DroneMAVSDK(Drone):
             await self.change_flight_mode("offboard")
 
         if use_gps:
-            if not self.trajectory_gen.CAN_DO_GPS:
+            if not self.trajectory_generator.CAN_DO_GPS:
                 raise RuntimeError("Trajectory generator can't use GPS coordinates!")
-            self.trajectory_gen.use_gps = True
-            self.trajectory_gen.set_target(np.asarray([lat, long, amsl, yaw]))
+            self.trajectory_generator.use_gps = True
+            self.trajectory_generator.set_target(np.asarray([lat, long, amsl, yaw]))
         else:
-            self.trajectory_gen.use_gps = False
-            self.trajectory_gen.set_target(np.asarray([x, y, z, yaw]))
+            self.trajectory_generator.use_gps = False
+            self.trajectory_generator.set_target(np.asarray([x, y, z, yaw]))
 
         while True:
             if not self.is_paused:
                 # Get and set a new setpoint to go to
-                setpoint = self.trajectory_gen.next_setpoint()
+                setpoint = self.trajectory_generator.next_setpoint()
                 # Set appropriate setpoint
-                match self.trajectory_gen.setpoint_type:
+                match self.trajectory_generator.setpoint_type:
                     case SetPointType.POS_NED:
                         await self.set_setpoint_pos_ned(setpoint)
                     case SetPointType.POS_VEL_NED:
@@ -876,7 +877,7 @@ class DroneMAVSDK(Drone):
                     case SetPointType.POS_GLOBAL:
                         await self.set_setpoint_gps(setpoint)
                     case _:
-                        raise RuntimeError(f"Invalid generator setpoint type {self.trajectory_gen.setpoint_type}! Must "
+                        raise RuntimeError(f"Invalid generator setpoint type {self.trajectory_generator.setpoint_type}! Must "
                                            f"be one of {self.VALID_SETPOINT_TYPES}")
 
                 # Check if we have arrived at target waypoint
@@ -890,7 +891,7 @@ class DroneMAVSDK(Drone):
                 if reached:
                     self.logger.info("Reached target position!")
                     return True
-            await asyncio.sleep(1/self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
 
     async def move(self, north, east, down, yaw, use_gps=True, tolerance=0.25):
         target_x = None
@@ -937,8 +938,8 @@ class DroneMAVSDK(Drone):
             await self.change_flight_mode("offboard")
         update_freq = 2
         try:
-            await self.system.telemetry.set_rate_position_velocity_ned(self._position_update_freq)
-            update_freq = self._position_update_freq
+            await self.system.telemetry.set_rate_position_velocity_ned(self.position_update_rate)
+            update_freq = self.position_update_rate
         except Exception as e:
             self.logger.debug(f"Couldn't set message rate: {repr(e)}", exc_info=True)
         while going_down:
@@ -958,10 +959,10 @@ class DroneMAVSDK(Drone):
         if isinstance(result, Exception):
             self.logger.warning("Couldn't go into land mode")
         while self.flightmode is not FlightMode.LAND:
-            await asyncio.sleep(1 / self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         self.logger.info("Landing!")
         while self.in_air:
-            await asyncio.sleep(1 / self._position_update_freq)
+            await asyncio.sleep(1 / self.position_update_rate)
         self.logger.info("Landed!")
         await self.change_flight_mode("hold")
         return True
@@ -1013,6 +1014,10 @@ class DroneMAVSDK(Drone):
             return False
         return True
 
+
+##################################################################################################
+# Trajectory Generators ##########################################################################
+##################################################################################################
 
 class TrajectoryGenerator(ABC):
 
@@ -1087,6 +1092,8 @@ class StaticWaypoints(TrajectoryGenerator):
 class DirectFlightFacingForward(TrajectoryGenerator):
     """ Flies directly toward the waypoint facing towards it along the way. Turning towards the target yaw happens
     after we reach the waypoint. Control happens only through velocity setpoints.
+
+    Currently very WIP, drifts off as soon as target positions are reached.
     """
     # TODO: Implement GPS
     # TODO: Figure out better way to handle yaw rate

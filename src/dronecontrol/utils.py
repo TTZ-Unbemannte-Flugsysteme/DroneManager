@@ -1,7 +1,10 @@
 import math
 from urllib.parse import urlparse
 import numpy as np
+import logging
 from haversine import inverse_haversine, haversine, Direction, Unit
+
+common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 
 def dist_ned(pos1, pos2):

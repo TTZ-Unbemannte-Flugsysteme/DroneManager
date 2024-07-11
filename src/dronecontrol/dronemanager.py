@@ -6,11 +6,11 @@ from asyncio.exceptions import TimeoutError, CancelledError
 import random
 
 from dronecontrol.drone import Drone, parse_address
+from dronecontrol.utils import common_formatter
 
 import logging
 
 
-common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
@@ -68,7 +68,7 @@ class DroneManager:
                                mavsdk_server_address: str | None,
                                mavsdk_server_port: int,
                                drone_address: str,
-                               timeout: float, compid=190):
+                               timeout: float):
         try:
             scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
@@ -96,7 +96,7 @@ class DroneManager:
                     if parsed_addr == other_addr and parsed_port == other_port:
                         self.logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
-                drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
+                drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 try:
                     connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
                                                                      component_id=self.component_id), timeout)
