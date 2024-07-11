@@ -319,6 +319,7 @@ class DroneManager:
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
         if drone is not None:
+            await drone.stop_execution()
             del drone
 
     def add_remove_func(self, func):

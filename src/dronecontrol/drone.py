@@ -685,32 +685,51 @@ class DroneMAVSDK(Drone):
                 return True
             await asyncio.sleep(1 / self.position_update_rate)
 
-    async def change_flight_mode(self, flightmode: str):
+    async def change_flight_mode(self, flightmode: str, timeout: float = 5):
         self.logger.info(f"Changing flight mode to {flightmode}")
         await super().change_flight_mode(flightmode)
         result = False
+        target_flight_mode = None
+        start_time = time.time()
         if flightmode == "hold":
             result = await self._error_wrapper(self.system.action.hold, ActionError)
+            target_flight_mode = FlightMode.HOLD
         elif flightmode == "offboard":
             result = await self._error_wrapper(self.system.offboard.start, OffboardError)
+            target_flight_mode = FlightMode.OFFBOARD
         elif flightmode == "return":
             result = await self._error_wrapper(self.system.action.return_to_launch, ActionError)
+            target_flight_mode = FlightMode.RETURN_TO_LAUNCH
         elif flightmode == "land":
             result = await self._error_wrapper(self.system.action.land, ActionError)
+            target_flight_mode = FlightMode.LAND
         elif flightmode == "takeoff":
             self._can_takeoff()
             result = await self._error_wrapper(self.system.action.takeoff, ActionError)
+            target_flight_mode = FlightMode.TAKEOFF
         elif flightmode == "position":
             result = await self._error_wrapper(self.system.manual_control.start_position_control, ManualControlError)
+            target_flight_mode = FlightMode.POSCTL
         elif flightmode == "altitude":
             result = await self._error_wrapper(self.system.manual_control.start_altitude_control, ManualControlError)
+            target_flight_mode = FlightMode.ALTCTL
         else:
             raise KeyError(f"{flightmode} is not a valid flightmode!")
-        if result and not isinstance(result, Exception):
-            self.logger.info(f"New flight mode {flightmode}!")
+        if isinstance(result, Exception):
+            self.logger.warning(f"Couldn't change flight mode due to exception {repr(result)}")
+            return False
+        elif not result:
+            self.logger.warning("Couldn't change flight mode due to a programmatic impossibility!")
+            return False
         else:
-            self.logger.warning("Couldn't change flight mode!")
-        return result
+            while self.flightmode != target_flight_mode and time.time() < start_time + timeout:
+                await asyncio.sleep(1/self.position_update_rate)
+            if self.flightmode != target_flight_mode:
+                self.logger.warning("Drone accepted command, but flight mode change timed out! Possible connection issue.")
+                return False
+            else:
+                self.logger.info(f"New flight mode {self.flightmode}!")
+                return True
 
     async def set_setpoint_pos_ned(self, setpoint):
         # point should be a numpy array of size (4, ) for north, east, down, yaw, with yaw in degrees.
