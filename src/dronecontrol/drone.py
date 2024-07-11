@@ -1170,6 +1170,8 @@ class StaticWaypoints(TrajectoryGenerator):
 class DirectFlightFacingForward(TrajectoryGenerator):
     """ Flies directly toward the waypoint facing towards it along the way. Turning towards the target yaw happens
     after we reach the waypoint. Control happens only through velocity setpoints.
+
+    Very WIP thing, currently drifts off as soon the target is reached.
     """
     # TODO: Implement GPS
     # TODO: Figure out better way to handle yaw rate
