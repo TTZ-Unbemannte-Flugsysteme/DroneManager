@@ -13,7 +13,9 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from mavsdk import System
-from mavsdk.telemetry import FlightMode, FixType, StatusTextType
+from mavsdk.telemetry import FlightMode as MAVSDKFlightMode
+from mavsdk.telemetry import FixType as MAVSDKFixType
+from mavsdk.telemetry import StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
@@ -29,9 +31,11 @@ os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 # TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor
-# TODO: Consider how to determine mavlink dialect
-# TODO: change_flight_mode scheduling, more flightmodes
 # TODO: health info
+
+
+FlightMode = MAVSDKFlightMode
+FixType = MAVSDKFixType
 
 
 class Battery:
