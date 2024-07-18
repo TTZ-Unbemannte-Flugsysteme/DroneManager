@@ -327,3 +327,15 @@ class DroneManager:
 
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
+
+    def log_status(self, name):
+        self.drones[name].log_status()
+
+    async def take_control(self, name):
+        await self.drones[name].take_control()
+
+    async def release_control(self, name):
+        await self.drones[name].release_control()
+
+    async def set_gimbal_angles(self, name, roll, pitch, yaw):
+        await self.drones[name].set_gimbal_angles(roll, pitch, yaw)
