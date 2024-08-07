@@ -3,10 +3,9 @@ import datetime
 import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
-import random
 
 from dronecontrol.drone import Drone, parse_address
-from dronecontrol.utils import common_formatter
+from dronecontrol.utils import common_formatter, get_free_port
 
 import logging
 
@@ -86,9 +85,7 @@ class DroneManager:
                     self.logger.warning(f"A drone called {name} already exists. Each drone must have a unique name.")
                     return False
                 if not mavsdk_server_address:
-                    used_ports = [drone.server_port for drone in self.drones.values()]
-                    while mavsdk_server_port in used_ports:
-                        mavsdk_server_port = random.randint(10000, 60000)
+                        mavsdk_server_port = get_free_port()
                 # Check that we don't already have this drone connected.
                 for other_name in self.drones:
                     other_drone = self.drones[other_name]
@@ -257,10 +254,6 @@ class DroneManager:
                                         roll, pitch, yaw,
                                         schedule=schedule)
 
-    async def take_picture(self, name, schedule=True):
-        await self._single_drone_action(self.drone_class.take_picture, name, f"{name} capturing a picture",
-                                        schedule=schedule)
-
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:
             await self.drones[name].orbit(radius, velocity, center_lat, center_long, amsl)
@@ -328,6 +321,8 @@ class DroneManager:
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
 
+# Gimbal Stuff #########################################################################################################
+
     def log_status(self, name):
         self.drones[name].log_status()
 
@@ -339,3 +334,32 @@ class DroneManager:
 
     async def set_gimbal_angles(self, name, roll, pitch, yaw):
         await self.drones[name].set_gimbal_angles(roll, pitch, yaw)
+
+    async def point_gimbal_at(self, name, lat, long, amsl):
+        await self.drones[name].point_gimbal_at(lat, long, amsl)
+
+    async def point_gimbal_at_relative(self, name, x, y, z):
+        await self.drones[name].point_gimbal_at_relative(x, y, z)
+
+    async def set_gimbal_mode(self, name, mode):
+        await self.drones[name].set_gimbal_mode(mode)
+
+# Camera Stuff #########################################################################################################
+
+    async def prepare(self, name):
+        await self.drones[name].prepare()
+
+    async def get_settings(self, name):
+        await self.drones[name].get_settings()
+
+    async def take_picture(self, name):
+        await self.drones[name].take_picture()
+
+    async def start_video(self, name):
+        await self.drones[name].start_video()
+
+    async def stop_video(self, name):
+        await self.drones[name].stop_video()
+
+    async def set_zoom(self, name, zoom):
+        await self.drones[name].set_zoom(zoom)

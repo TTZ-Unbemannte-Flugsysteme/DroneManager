@@ -2,7 +2,9 @@ import asyncio
 import math
 from typing import Dict
 
-from mavsdk.gimbal import GimbalError, MAVControlMode, MAVGimbalMode
+from mavsdk.gimbal import GimbalError
+from mavsdk.gimbal import ControlMode as MAVControlMode
+from mavsdk.gimbal import GimbalMode as MAVGimbalMode
 
 from dronecontrol.plugins import Plugin
 from dronecontrol.utils import relative_gps

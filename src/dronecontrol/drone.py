@@ -19,10 +19,11 @@ from mavsdk.telemetry import StatusTextType
 from mavsdk.action import ActionError, OrbitYawBehavior
 from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, AccelerationNed, OffboardError
 from mavsdk.manual_control import ManualControlError
+from mavsdk.camera import CameraError
 
-from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address, common_formatter
+from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
-from dronecontrol.gimbal import Gimbal, ControlMode
+from dronecontrol.gimbal import Gimbal
 
 import logging
 
@@ -89,6 +90,7 @@ class Drone(ABC, threading.Thread):
         self.trajectory_generator: TrajectoryGenerator | None = None
 
         self.is_paused = False
+        self.mav_conn: MAVPassthrough | None = None
         self.start()
         asyncio.create_task(self._task_scheduler())
 
@@ -375,11 +377,8 @@ class DroneMAVSDK(Drone):
         self.position_update_rate = 5                     # How often (per second) go-to-position commands compute if they have arrived.
 
         self._max_position_discontinuity = - math.inf
-        # Can't use passthrough if we already have a mavsdk server running:
-        if self.server_addr is not None:
-            self._passthrough = None
-        else:
-            self._passthrough = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
+
+        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
         self.trajectory_generator = StaticWaypoints(self, 1 / self.position_update_rate, self.logger)
 
         self.gimbal = None
@@ -439,12 +438,11 @@ class DroneMAVSDK(Drone):
         scheme, loc, appendix = parse_address(string=drone_address)
         self.drone_addr = f"{scheme}://{loc}:{appendix}"
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
-        if self._passthrough:
+        if self.mav_conn:
+            mavsdk_passthrough_port = get_free_port()
             if scheme == "serial":
-                mavsdk_passthrough_port = 14531
                 mavsdk_passthrough_string = f"udp://:{mavsdk_passthrough_port}"  # TODO: Pick a random port until we get a free one
             else:
-                mavsdk_passthrough_port = appendix + 1000
                 mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
             passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
         else:
@@ -467,21 +465,21 @@ class DroneMAVSDK(Drone):
             connected = asyncio.create_task(self.system.connect(system_address=mavsdk_passthrough_string))
 
             # Create passthrough
-            if self._passthrough:
+            if self.mav_conn:
                 await asyncio.sleep(0.5)  # Wait to try and make sure that the mavsdk server has started before booting up passthrough
                 self.logger.debug(
                     f"Connecting passthrough to drone @{loc}:{appendix} and MAVSDK server @ {passthrough_gcs_string}")
-                self._passthrough.connect_drone(loc, appendix, scheme=scheme)
-                self._passthrough.connect_gcs(passthrough_gcs_string)
+                self.mav_conn.connect_drone(loc, appendix, scheme=scheme)
+                self.mav_conn.connect_gcs(passthrough_gcs_string)
 
-                while not self._passthrough.connected_to_drone() or not self._passthrough.connected_to_gcs():
+                while not self.mav_conn.connected_to_drone() or not self.mav_conn.connected_to_gcs():
                     self.logger.debug(f"Waiting on passthrough to connect. "
-                                      f"Drone: {self._passthrough.connected_to_drone()}, "
-                                      f"GCS: {self._passthrough.connected_to_gcs()}")
+                                      f"Drone: {self.mav_conn.connected_to_drone()}, "
+                                      f"GCS: {self.mav_conn.connected_to_gcs()}")
                     await asyncio.sleep(0.1)
                 self.logger.debug("Connected passthrough!")
-                self.drone_system_id = self._passthrough.drone_system
-                self.drone_component_id = self._passthrough.drone_component
+                self.drone_system_id = self.mav_conn.drone_system
+                self.drone_component_id = self.mav_conn.drone_component
 
             await connected
 
@@ -530,9 +528,9 @@ class DroneMAVSDK(Drone):
             self.logger.debug(f"{repr(e)}", exc_info=True)
 
     async def _connect_check(self):
-        if self._passthrough:
+        if self.mav_conn:
             while True:
-                self._is_connected = self._passthrough.connected_to_drone() and self._passthrough.connected_to_gcs()
+                self._is_connected = self.mav_conn.connected_to_drone() and self.mav_conn.connected_to_gcs()
                 await asyncio.sleep(1 / self.position_update_rate)
         else:
             async for state in self.system.core.connection_state():
@@ -999,9 +997,9 @@ class DroneMAVSDK(Drone):
 
         :return:
         """
-        if self._passthrough:
-            await self._passthrough.stop()
-            del self._passthrough
+        if self.mav_conn:
+            await self.mav_conn.stop()
+            del self.mav_conn
         self.system.__del__()
         if self._server_process:
             self._server_process.terminate()
@@ -1025,7 +1023,15 @@ class DroneMAVSDK(Drone):
         await super().kill()
         return True
 
-    # TODO: Camera/Gimbal handling
+    async def _error_wrapper(self, func, error_type, *args, **kwargs):
+        try:
+            await func(*args, **kwargs)
+        except error_type as e:
+            self.logger.error(e._result.result_str)
+            return False
+        return True
+
+# Gimbal Stuff #########################################################################################################
 
     def log_status(self):
         self.gimbal.log_status()
@@ -1045,19 +1051,49 @@ class DroneMAVSDK(Drone):
     async def point_gimbal_at_relative(self, x, y, z):
         await self.gimbal.point_gimbal_at_relative(x, y, z)
 
-    async def take_picture(self):
-        self._passthrough.send_take_picture()
+    async def set_gimbal_mode(self, mode):
+        await self.gimbal.set_gimbal_mode(mode)
+
+# Camera Stuff #########################################################################################################
+
+    async def prepare(self):
+        await self._error_wrapper(self.system.camera.prepare, CameraError)
+
+    async def take_picture(self, ir=True, vis=True):
+        flags = 0
+        if ir:
+            flags += 1
+        if vis:
+            flags += 8
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=2000,
+                                          param3=1.0,
+                                          param5=int(flags),
+                                          )
         #await self._error_wrapper(self.system.camera.take_photo, CameraError)
 
-    # MAVSDK Error wrapping functions
+    async def start_video(self, ir=True, vis=True):
+        flags = 0
+        if ir:
+            flags += 2
+        if vis:
+            flags += 4
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=2500,
+                                          param1=int(flags),
+                                          param2=2,
+                                          )
 
-    async def _error_wrapper(self, func, error_type, *args, **kwargs):
-        try:
-            await func(*args, **kwargs)
-        except error_type as e:
-            self.logger.error(e._result.result_str)
-            return False
-        return True
+    async def stop_video(self):
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=2501, )
+
+    async def get_settings(self):
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=521, )
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=522,
+                                          param1=1)
+
+    async def set_zoom(self, zoom):
+        await self.mav_conn.send_cmd_long(target_system=self.drone_system_id, target_component=100, cmd=203,
+                                          param2=zoom,
+                                          param5=0)
 
 
 ##################################################################################################

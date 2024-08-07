@@ -2,6 +2,7 @@ import math
 from urllib.parse import urlparse
 import numpy as np
 import logging
+import socket
 from haversine import inverse_haversine, haversine, Direction, Unit
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
@@ -24,6 +25,20 @@ def relative_gps(north, east, up, lat, long, alt):
     coords = inverse_haversine(coords, north, Direction.NORTH, unit=Unit.METERS)
     target_lat, target_long = inverse_haversine(coords, east, Direction.EAST, unit=Unit.METERS)
     return target_lat, target_long, target_alt
+
+
+def get_free_port():
+    """ Get a free network port.
+
+    The port is not guaranteed to be free once the function returns.
+
+    :return:
+    """
+    sock = socket.socket()
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
 
 
 def parse_address(string):

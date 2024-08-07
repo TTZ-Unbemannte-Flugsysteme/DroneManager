@@ -171,7 +171,7 @@ class CommandScreen(Screen):
         connect_parser.add_argument("-sa", "--server_address", type=str, default=None,
                                     help="Address for the mavsdk server. If omitted, a server is started "
                                          "automatically. Use this only if you already have a server for this drone "
-                                         "running (for example on another machine). Default None")
+                                         "running (for example on another machine). Default None.")
         connect_parser.add_argument("-sp", "--server_port", type=int, default=50051,
                                     help="Port for the mavsdk server. Default 50051.")
         connect_parser.add_argument("-t", "--timeout", type=float, default=120, required=False,
@@ -281,10 +281,36 @@ class CommandScreen(Screen):
         gimbal_rotate_parser.add_argument("pitch", type=float, help="Pitch angle of the gimbal.")
         gimbal_rotate_parser.add_argument("yaw", type=float, help="Yaw angle of the gimbal.")
 
-        photo_parser = subparsers.add_parser("photo", help="Take a picture")
-        photo_parser.add_argument("drone", type=str, help="Which drones should take a picture")
-        photo_parser.add_argument("-s", "--schedule", action="store_true",
-                                  help="Queue this action instead of executing immediately.")
+        gimbal_point_parser = subparsers.add_parser("gmbl-point", help="Keep the gimbal pointed at a target location")
+        gimbal_point_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        gimbal_point_parser.add_argument("lat", type=float, help="Target distance north or latitude.")
+        gimbal_point_parser.add_argument("long", type=float, help="Target distance east or longitude")
+        gimbal_point_parser.add_argument("amsl", type=float, help="Target distance down or amsl")
+        gimbal_point_parser.add_argument("-a", "--absolute", action="store_true",
+                                         help="Use absolute instead of relative coordinates.")
+
+        gimbal_mode_parser = subparsers.add_parser("gmbl-mode", help="Set the gimbal mode (follow or lock, etc)")
+        gimbal_mode_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        gimbal_mode_parser.add_argument("mode", type=str, choices=["follow", "lock"])
+
+        cam_prepare_parser = subparsers.add_parser("cam-prep", help="Prepare camera plugin")
+        cam_prepare_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+
+        cam_settings_parser = subparsers.add_parser("cam-settings", help="Start recording video")
+        cam_settings_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+
+        cam_picture_parser = subparsers.add_parser("cam-photo", help="Take a picture")
+        cam_picture_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+
+        cam_video_start_parser = subparsers.add_parser("cam-start", help="Start recording video")
+        cam_video_start_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+
+        cam_video_stop_parser = subparsers.add_parser("cam-stop", help="Start recording video")
+        cam_video_stop_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+
+        cam_zoom_parser = subparsers.add_parser("cam-zoom", help="Start recording video")
+        cam_zoom_parser.add_argument("drone", type=str, help="Which drones should take a picture")
+        cam_zoom_parser.add_argument("zoom", type=float, help="Target zoom level")
 
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
@@ -378,8 +404,25 @@ class CommandScreen(Screen):
                     tmp = asyncio.create_task(self.dm.release_control(args.drone))
                 case "gmbl-rotate":
                     tmp = asyncio.create_task(self.dm.set_gimbal_angles(args.drone, args.roll, args.pitch, args.yaw))
-                case "photo":
-                    tmp = asyncio.create_task(self.dm.take_picture(args.drone, schedule=args.schedule))
+                case "gmbl-point":
+                    if args.absolute:
+                        tmp = asyncio.create_task(self.dm.point_gimbal_at(args.drone, args.lat, args.long, args.amsl))
+                    else:
+                        tmp = asyncio.create_task(self.dm.point_gimbal_at_relative(args.drone, args.lat, args.long, args.amsl))
+                case "gmbl-mode":
+                    tmp = asyncio.create_task(self.dm.set_gimbal_mode(args.drone, args.mode))
+                case "cam-prep":
+                    tmp = asyncio.create_task(self.dm.prepare(args.drone))
+                case "cam-settings":
+                    tmp = asyncio.create_task(self.dm.get_settings(args.drone))
+                case "cam-photo":
+                    tmp = asyncio.create_task(self.dm.take_picture(args.drone))
+                case "cam-start":
+                    tmp = asyncio.create_task(self.dm.start_video(args.drone))
+                case "cam-stop":
+                    tmp = asyncio.create_task(self.dm.stop_video(args.drone))
+                case "cam-zoom":
+                    tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))

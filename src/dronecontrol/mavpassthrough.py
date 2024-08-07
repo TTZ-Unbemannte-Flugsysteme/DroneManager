@@ -1,5 +1,6 @@
 import logging
 import datetime
+import math
 import time
 import os
 import asyncio
@@ -168,19 +169,20 @@ class MAVPassthrough:
             return False
 
     def send_as_gcs(self, msg):
-        self.logger.debug(f"Sending Message as GCS {msg.get_srcSystem(), msg.get_srcComponent()}: {msg.to_dict()}")
         try:
             self.con_drone_in.mav.srcSystem = self.gcs_system
             self.con_drone_in.mav.srcComponent = self.gcs_component
             self.con_drone_in.mav.send(msg)
+            self.logger.debug(f"Sent Message as GCS {msg.get_srcSystem(), msg.get_srcComponent()}: {msg.to_dict()}")
             self.con_drone_in.mav.srcSystem = self.source_system
             self.con_drone_in.mav.srcComponent = self.source_component
         except Exception as e:
             self.logger.debug(repr(e), exc_info=True)
 
-    def send_take_picture(self):
-        self.logger.debug("Taking picture?")
-        msg = self.con_drone_in.mav.command_long_encode(13, 0, 2003, 0, 1, 0, 0, 0, 0, 0, 0)
+    def send_cmd_long(self, target_system, target_component, cmd, param1=math.nan, param2=math.nan, param3=math.nan,
+                      param4=math.nan, param5=math.nan, param6=math.nan, param7=math.nan):
+        msg = self.con_drone_in.mav.command_long_encode(target_system, target_component, cmd, 0,
+                                                        param1, param2, param3, param4, param5, param6, param7)
         self.send_as_gcs(msg)
 
     def _process_message_for_return(self, msg):
