@@ -9,6 +9,12 @@ from dronecontrol.utils import common_formatter, get_free_port
 
 import logging
 
+from dronecontrol.gimbal import GimbalPlugin
+
+PLUGINS = {
+    "gimbal": GimbalPlugin,
+}
+
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -39,10 +45,12 @@ class DroneManager:
         self._on_drone_removal_coros = set()
         self._on_drone_connect_coros = set()
 
+        self._on_plugin_load_coros = set()
+        self._on_plugin_unload_coros = set()
+        self.plugins = set()
+
         self.system_id = 246
         self.component_id = 190
-
-        self.plugins = []
 
         if logger is None:
             self.logger = logging.getLogger("Manager")
@@ -57,10 +65,6 @@ class DroneManager:
             self.logger.addHandler(file_handler)
         else:
             self.logger = logger
-
-    @property
-    def used_drone_addrs(self):
-        return [drone.drone_addr for drone in self.drones.values()]
 
     async def connect_to_drone(self,
                                name: str,
@@ -246,14 +250,6 @@ class DroneManager:
                                         schedule=schedule,
                                         use_gps=not no_gps, tolerance=tol)
 
-    ### TEMP FUNCTIONS, GIMBAL AND CAMERA HANDLING IS VERY WIP
-
-    async def gimbal_rotate_to(self, name, roll, pitch, yaw, schedule=True):
-        await self._single_drone_action(self.drone_class.set_gimbal_angles, name,
-                                        f"Setting gimbal angles to R{roll}, P{pitch}, Y{yaw}",
-                                        roll, pitch, yaw,
-                                        schedule=schedule)
-
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:
             await self.drones[name].orbit(radius, velocity, center_lat, center_long, amsl)
@@ -320,6 +316,37 @@ class DroneManager:
 
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
+
+# PLUGINS ##############################################################################################################
+
+    def plugin_options(self):
+        self.logger.info(f"Possible plugins are: {", ".join(PLUGINS.keys())}")
+
+    def currently_loaded_plugins(self):
+        self.logger.info(f"Currently loaded plugins: {", ".join(self.plugins)}")
+
+    def load_plugin(self, plugin_name):
+        # Create plugin instance, add plugin commands (how???)
+        if plugin_name in self.plugins:
+            self.logger.warning(f"Plugin {plugin_name} already loaded!")
+            return False
+        self.plugins.add(plugin_name)
+        plugin = PLUGINS[plugin_name](self, self.logger)
+        setattr(self, plugin_name, plugin)
+        for func in self._on_plugin_load_coros:
+            self.running_tasks.add(asyncio.create_task(func(plugin_name, plugin)))
+
+    def unload_plugin(self, plugin_name):
+        if plugin_name not in self.plugins:
+            self.logger.warning(f"No plugin named {plugin_name}!")
+            return False
+        self.plugins.remove(plugin_name)
+        plugin = getattr(self, plugin_name)
+        unload_tasks = set()
+        for func in self._on_plugin_unload_coros:
+            unload_tasks.add(func(plugin_name, plugin))
+        asyncio.gather(*unload_tasks, return_exceptions=True)
+        delattr(self, plugin_name)
 
 # Gimbal Stuff #########################################################################################################
 

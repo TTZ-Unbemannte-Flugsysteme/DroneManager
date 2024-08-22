@@ -177,6 +177,10 @@ class Drone(ABC, threading.Thread):
         pass
 
     @property
+    def autopilot(self) -> str:
+        return self.mav_conn.drone_autopilot
+
+    @property
     @abstractmethod
     def fix_type(self) -> FixType:
         pass
@@ -440,10 +444,7 @@ class DroneMAVSDK(Drone):
         self.logger.debug(f"Connecting to drone {self.name} @ {self.drone_addr}")
         if self.mav_conn:
             mavsdk_passthrough_port = get_free_port()
-            if scheme == "serial":
-                mavsdk_passthrough_string = f"udp://:{mavsdk_passthrough_port}"  # TODO: Pick a random port until we get a free one
-            else:
-                mavsdk_passthrough_string = f"{scheme}://:{mavsdk_passthrough_port}"
+            mavsdk_passthrough_string = f"udp://:{mavsdk_passthrough_port}"
             passthrough_gcs_string = f"127.0.0.1:{mavsdk_passthrough_port}"
         else:
             if scheme == "serial":
@@ -660,7 +661,11 @@ class DroneMAVSDK(Drone):
         return pos_yaw
 
     async def _takeoff_using_takeoffmode(self, altitude=-2.5):
-        # TODO: Change takeoff altitude by changing PX4 param before going into takeoff mode
+        """
+
+        :param altitude: Currently ignored.
+        :return:
+        """
         self.logger.info("Trying to take off...")
         await super().takeoff(altitude=altitude)
         self._can_takeoff()
@@ -771,8 +776,11 @@ class DroneMAVSDK(Drone):
         return await self._error_wrapper(self.system.offboard.set_position_global, OffboardError, position)
 
     def _can_do_in_air_commands(self):
+        # TODO: Figure out how to do this with ardupilot. Currently the in_air detection is very poor
+        if self.autopilot == "ardupilot":
+            return True
         if not self.is_armed or not self.in_air:
-            raise RuntimeError("Can't fly a landed or unarmed drone!")
+            return False
 
     async def yaw_to(self, x, y, z, target_yaw, yaw_rate=30, tolerance=2):
         """ Move to the point x,y,z, yawing to the target heading as you do so at the specified rate.
@@ -846,7 +854,8 @@ class DroneMAVSDK(Drone):
         :return:
         """
         # Check that we have one full set of coordinates and are in a flyable state
-        self._can_do_in_air_commands()
+        if not self._can_do_in_air_commands():
+            raise RuntimeError("Can't fly a landed or unarmed drone!")
         assert ((x is not None and y is not None and z is not None)
                 or (lat is not None, long is not None, amsl is not None)), \
             "Must provide a full set of either NED or GPS coordinates!"
@@ -1176,7 +1185,6 @@ class DirectFlightFacingForward(TrajectoryGenerator):
 
     Currently very WIP, drifts off as soon as target positions are reached.
     """
-    # TODO: Implement GPS
     # TODO: Figure out better way to handle yaw rate
 
     SETPOINT_TYPES = {SetPointType.VEL_NED}

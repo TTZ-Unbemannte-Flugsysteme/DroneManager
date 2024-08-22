@@ -9,8 +9,7 @@ from abc import ABC
 
 # TODO: Figure out scheduling
 #   Have to interact with drone queues ("Move to position X, then turn gimbal, then move to position Y)
-#   BUT, also want to perform plugin actions immediately mid flight without killing other drone tasks, except if we
-#   also want to kill other drone tasks.
+#   BUT, also want to perform plugin actions immediately mid flight without killing other drone tasks, (except if we do)
 
 class Plugin(ABC):
     """ Generic plugin class.

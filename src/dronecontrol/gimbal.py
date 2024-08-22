@@ -11,7 +11,7 @@ from dronecontrol.utils import relative_gps
 
 
 # TODO: Support multiple gimbals per drone
-#   Currently looks like it might be supported, but actually isn't. Will have to do this without MAVSDK.
+#   Currently looks like it might be supported, but actually isn't. Will probably have to do this without MAVSDK.
 
 ControlMode = MAVControlMode
 GimbalMode = MAVGimbalMode
@@ -109,20 +109,15 @@ class Gimbal:
         async for gimbal_control in self.drone.system.gimbal.control():
             self.primary_control = (gimbal_control.sysid_primary_control, gimbal_control.compid_primary_control)
             self.secondary_control = (gimbal_control.sysid_secondary_control, gimbal_control.compid_secondary_control)
-            self.logger.debug(f"Gimbal control: {gimbal_control.control_mode}, "
-                              f"P: {gimbal_control.sysid_primary_control, gimbal_control.compid_primary_control}, "
-                              f"S: {gimbal_control.sysid_secondary_control, gimbal_control.compid_secondary_control}")
 
     def log_status(self):
         self.logger.info(f"Gimbal control P:{self.primary_control}, S: {self.secondary_control}, Roll: {self.roll}, "
                          f"Pitch: {self.pitch}, Yaw: {self.yaw}")
             
     async def take_control(self):
-        self.logger.info("Taking control of gimbal...")
         await self._error_wrapper(self.drone.system.gimbal.take_control, ControlMode.PRIMARY)
 
     async def release_control(self):
-        self.logger.info("Releasing control of gimbal...")
         await self._error_wrapper(self.drone.system.gimbal.release_control, ControlMode.PRIMARY)
 
     async def point_gimbal_at(self, lat, long, amsl):
