@@ -3,6 +3,9 @@ from urllib.parse import urlparse
 import numpy as np
 import logging
 import socket
+import inspect
+import typing
+import types
 from haversine import inverse_haversine, haversine, Direction, Unit
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
@@ -66,3 +69,83 @@ def parse_address(string):
         if append is None:
             append = 50051
     return scheme, loc, append
+
+
+def check_cli_command_signatures(command):
+    """
+
+    If a signature is invalid, the other fields may not be populated correctly or at all.
+
+    :param command:
+    :return:
+    """
+    sig = inspect.signature(command)
+    args_invalid = []
+    args_name = []
+    args_list = []
+    args_required = []
+    args_accepts_none = []
+    args_types = []
+    args_kwonly = []
+    for param in sig.parameters.values():
+        is_invalid = False
+        is_list = False
+        is_required = param.default is param.empty
+        accepts_none = False
+        param_type = str
+        is_kwonly = param.kind is param.KEYWORD_ONLY
+
+        # Cases we accept: Direct type, List of a type, Union of a type and None, Union of None and a list of a type
+        if param.annotation is None or param.annotation is param.empty or len(typing.get_args(param.annotation)) > 2:
+            is_invalid = True
+        # Looking at the case of a union with a raw type or a union with a raw type and a list
+        if typing.get_origin(param.annotation) in (typing.Union, types.UnionType):
+            if type(None) not in typing.get_args(param.annotation):
+                is_invalid = True
+            accepts_none = True
+            for type_arg in typing.get_args(param.annotation):
+                if type_arg is type(None):  # Skip the None arg
+                    continue
+                elif typing.get_origin(type_arg) is not None:  # If its a container of some sort
+                    if not typing.get_origin(type_arg) is list:  # Invalid if not a list
+                        is_invalid = True
+                    else:
+                        is_list = True
+                        if len(typing.get_args(type_arg)) > 1:  # Invalid if multiple arguments
+                            is_invalid = True
+                        else:
+                            list_internal_type = typing.get_args(type_arg)[0]
+                            # Check that we dont have nested lists:
+                            if typing.get_origin(list_internal_type) is not None:
+                                is_invalid = True
+                            param_type = list_internal_type
+                else:  # Parameter is not None or a container
+                    is_list = False
+                    param_type = type_arg
+        else:
+            if typing.get_origin(param.annotation) is not None:  # If it's a container of some sort
+                if not typing.get_origin(param.annotation) is list:  # Invalid if not a list
+                    is_invalid = True
+                else:
+                    is_list = True
+                    if len(typing.get_args(param.annotation)) > 1:  # Invalid if multiple arguments
+                        is_invalid = True
+                    else:
+                        list_internal_type = typing.get_args(param.annotation)[0]
+                        # Check that we dont have nested lists:
+                        if typing.get_origin(list_internal_type) is not None:
+                            is_invalid = True
+                        param_type = list_internal_type
+            else:
+                is_list = False
+                param_type = param.annotation
+        name = param.name
+        args_invalid.append(is_invalid)
+        args_name.append(name)
+        args_list.append(is_list)
+        args_required.append(is_required)
+        args_accepts_none.append(accepts_none)
+        args_types.append(param_type)
+        args_kwonly.append(is_kwonly)
+
+    return list(zip(args_invalid, args_name, args_list, args_required, args_accepts_none, args_types, args_kwonly))

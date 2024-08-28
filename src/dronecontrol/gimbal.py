@@ -10,8 +10,8 @@ from dronecontrol.plugins import Plugin
 from dronecontrol.utils import relative_gps
 
 
-# TODO: Support multiple gimbals per drone
-#   Currently looks like it might be supported, but actually isn't. Will probably have to do this without MAVSDK.
+# TODO: Multiple gimbals per drone
+# TODO: Log more
 
 ControlMode = MAVControlMode
 GimbalMode = MAVGimbalMode
@@ -35,40 +35,53 @@ class GimbalPlugin(Plugin):
         }
         self.background_functions = [
         ]
-        self.gimbals: Dict[str, Dict[int, Gimbal]] = {}  # Dictionary with drone names as keys and list of gimbals on that drone as values
+        self.gimbals: Dict[str, Gimbal] = {}  # Dictionary with drone names as keys and gimbals as values
         self.running_tasks = set()
 
-    def add_gimbals(self, name: str):
-        """ Add Gimbals from/for a given drone to the plugin"""
-        drone = self.dm.drones[name]
-        self.gimbals[name] = {0: Gimbal(self.logger, drone)}
+    async def start(self):
+        self.logger.debug("Starting Gimbal plugin...")
 
-    def remove_gimbal(self, name: str, gimbal_id: int):
+    async def close(self):
+        """ Removes all gimbals """
+        coros = [self.remove_gimbal(drone) for drone in self.gimbals]
+        await asyncio.gather(*coros)
+
+    async def add_gimbals(self, drone: str):
+        """ Add Gimbals from/for a given drone to the plugin"""
+        self.logger.info(f"Adding gimbal to drone {drone}")
+        try:
+            drone_object = self.dm.drones[drone]
+            self.gimbals[drone] = Gimbal(self.logger, drone_object)
+        except Exception as e:
+            self.logger.warning(repr(e))
+
+    async def remove_gimbal(self, drone: str):
         """ Remove a gimbal from the plugin"""
-        gimbal = self.gimbals[name].pop(gimbal_id)
-        gimbal.close()
+        self.logger.info(f"Removing gimbal to drone {drone}")
+        gimbal = self.gimbals.pop(drone)
+        await gimbal.close()
         del gimbal
 
-    def status(self, name: str, gimbal_id: int):
-        self.gimbals[name][gimbal_id].log_status()
+    async def status(self, drone: str):
+        self.gimbals[drone].log_status()
 
-    async def take_control(self, name: str, gimbal_id: int):
-        await self.gimbals[name][gimbal_id].take_control()
+    async def take_control(self, drone: str):
+        await self.gimbals[drone].take_control()
 
-    async def release_control(self, name: str, gimbal_id: int):
-        await self.gimbals[name][gimbal_id].release_control()
+    async def release_control(self, drone: str):
+        await self.gimbals[drone].release_control()
 
-    async def set_gimbal_angles(self, name: str, gimbal_id: int, roll: float, pitch: float, yaw: float):
-        return await self.gimbals[name][gimbal_id].set_gimbal_angles(roll, pitch, yaw)
+    async def set_gimbal_angles(self, drone: str, roll: float, pitch: float, yaw: float):
+        return await self.gimbals[drone].set_gimbal_angles(roll, pitch, yaw)
 
-    async def point_gimbal_at(self, name: str, gimbal_id: int, x1: float, x2: float, x3: float, relative: bool = False):
+    async def point_gimbal_at(self, drone: str, x1: float, x2: float, x3: float, relative: bool = False):
         if relative:
-            return await self.gimbals[name][gimbal_id].point_gimbal_at_relative(x1, x2, x3)
+            return await self.gimbals[drone].point_gimbal_at_relative(x1, x2, x3)
         else:
-            return await self.gimbals[name][gimbal_id].point_gimbal_at(x1, x2, x3)
+            return await self.gimbals[drone].point_gimbal_at(x1, x2, x3)
 
-    async def set_gimbal_mode(self, name: str, gimbal_id: int, mode: str):
-        return await self.gimbals[name][gimbal_id].set_gimbal_mode(mode)
+    async def set_gimbal_mode(self, drone: str, mode: str):
+        return await self.gimbals[drone].set_gimbal_mode(mode)
 
 
 class Gimbal:
@@ -89,7 +102,7 @@ class Gimbal:
         self.running_tasks.add(asyncio.create_task(self._check_gimbal_attitude()))
         self.running_tasks.add(asyncio.create_task(self._check_gimbal_control()))
 
-    def close(self):
+    async def close(self):
         for task in self.running_tasks:
             task.cancel()
 

@@ -23,7 +23,6 @@ from mavsdk.camera import CameraError
 
 from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
-from dronecontrol.gimbal import Gimbal
 
 import logging
 
@@ -385,7 +384,7 @@ class DroneMAVSDK(Drone):
         self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
         self.trajectory_generator = StaticWaypoints(self, 1 / self.position_update_rate, self.logger)
 
-        self.gimbal = None
+        #self.gimbal = None
 
         attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
         self.logger.debug(f"Initialized Drone {self.name}, {self.__class__.__name__}:\n   {attr_string}")
@@ -489,7 +488,7 @@ class DroneMAVSDK(Drone):
                     await self._configure_message_rates()
                     await self._schedule_update_tasks()
                     self.logger.debug("Connected!")
-                    self.gimbal = Gimbal(self.logger, self)
+                    #self.gimbal = Gimbal(self.logger, self)
                     return True
         except Exception as e:
             self.logger.debug(f"Exception during connection: {repr(e)}", exc_info=True)
@@ -1041,27 +1040,27 @@ class DroneMAVSDK(Drone):
         return True
 
 # Gimbal Stuff #########################################################################################################
-
-    def log_status(self):
-        self.gimbal.log_status()
-
-    async def take_control(self):
-        await self.gimbal.take_control()
-
-    async def release_control(self):
-        await self.gimbal.release_control()
-
-    async def set_gimbal_angles(self, roll, pitch, yaw):
-        await self.gimbal.set_gimbal_angles(roll, pitch, yaw)
-
-    async def point_gimbal_at(self, lat, long, amsl):
-        await self.gimbal.point_gimbal_at(lat, long, amsl)
-
-    async def point_gimbal_at_relative(self, x, y, z):
-        await self.gimbal.point_gimbal_at_relative(x, y, z)
-
-    async def set_gimbal_mode(self, mode):
-        await self.gimbal.set_gimbal_mode(mode)
+#
+#     def log_status(self):
+#         self.gimbal.log_status()
+#
+#     async def take_control(self):
+#         await self.gimbal.take_control()
+#
+#     async def release_control(self):
+#         await self.gimbal.release_control()
+#
+#     async def set_gimbal_angles(self, roll, pitch, yaw):
+#         await self.gimbal.set_gimbal_angles(roll, pitch, yaw)
+#
+#     async def point_gimbal_at(self, lat, long, amsl):
+#         await self.gimbal.point_gimbal_at(lat, long, amsl)
+#
+#     async def point_gimbal_at_relative(self, x, y, z):
+#         await self.gimbal.point_gimbal_at_relative(x, y, z)
+#
+#     async def set_gimbal_mode(self, mode):
+#         await self.gimbal.set_gimbal_mode(mode)
 
 # Camera Stuff #########################################################################################################
 

@@ -75,7 +75,8 @@ class DroneManager:
         try:
             scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
-            self.logger.info(repr(e))
+            self.logger.warning("Couldn't connect due to an exception: ", repr(e))
+            self.logger.debug(repr(e), exc_info=True)
             return False
         if scheme == "serial":
             self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr} with baud {parsed_port}")
@@ -320,32 +321,47 @@ class DroneManager:
 # PLUGINS ##############################################################################################################
 
     def plugin_options(self):
-        self.logger.info(f"Possible plugins are: {", ".join(PLUGINS.keys())}")
+        return PLUGINS.keys()
 
     def currently_loaded_plugins(self):
-        self.logger.info(f"Currently loaded plugins: {", ".join(self.plugins)}")
+        return self.plugins
 
-    def load_plugin(self, plugin_name):
+    def add_plugin_load_func(self, func):
+        self._on_plugin_load_coros.add(func)
+
+    def add_plugin_unload_func(self, func):
+        self._on_drone_connect_coros.add(func)
+
+    async def load_plugin(self, plugin_name):
         # Create plugin instance, add plugin commands (how???)
         if plugin_name in self.plugins:
             self.logger.warning(f"Plugin {plugin_name} already loaded!")
             return False
+        if plugin_name not in PLUGINS:
+            self.logger.warning(f"No plugin '{plugin_name}' found!")
+            return False
+        self.logger.info(f"Loading plugin {plugin_name}...")
         self.plugins.add(plugin_name)
         plugin = PLUGINS[plugin_name](self, self.logger)
         setattr(self, plugin_name, plugin)
+        await plugin.start()
+        self.logger.debug(f"Performing callbacks for plugin loading...")
         for func in self._on_plugin_load_coros:
             self.running_tasks.add(asyncio.create_task(func(plugin_name, plugin)))
+        self.logger.info(f"Plugin {plugin_name} fully loaded!")
 
-    def unload_plugin(self, plugin_name):
+    async def unload_plugin(self, plugin_name):
         if plugin_name not in self.plugins:
-            self.logger.warning(f"No plugin named {plugin_name}!")
+            self.logger.warning(f"No plugin named {plugin_name} loaded!")
             return False
+        self.logger.info(f"Unloading plugin {plugin_name}")
         self.plugins.remove(plugin_name)
         plugin = getattr(self, plugin_name)
         unload_tasks = set()
         for func in self._on_plugin_unload_coros:
             unload_tasks.add(func(plugin_name, plugin))
-        asyncio.gather(*unload_tasks, return_exceptions=True)
+        await asyncio.gather(*unload_tasks, return_exceptions=True)
+        await plugin.close()
         delattr(self, plugin_name)
 
 # Gimbal Stuff #########################################################################################################

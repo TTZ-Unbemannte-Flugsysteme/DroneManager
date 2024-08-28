@@ -5,7 +5,7 @@ import shlex
 
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import Drone, DroneMAVSDK
-from dronecontrol.utils import common_formatter
+from dronecontrol.utils import common_formatter, check_cli_command_signatures
 
 import textual.css.query
 from textual import on, events
@@ -33,6 +33,8 @@ DRONE_DICT = {
 }
 
 UPDATE_RATE = 20  # How often the various screens update in Hz
+
+DEFAULT_PLUGINS = ["gimbal"]
 
 
 class StatusScreen(Screen):
@@ -156,15 +158,27 @@ class CommandScreen(Screen):
         self._kill_counter = 0  # Require kill all to be entered twice
         self.logger = logger
         self.log_pane_handlers = {}
+
+        base_parser, command_parser = self._base_parser()
+        self.parser = base_parser
+        self.command_parser = command_parser
+
+        self.dynamic_commands = {}
+
         self.dm.add_connect_func(self._add_drone_object)
         self.dm.add_remove_func(self._remove_drone_object)
 
-        self.parser = ArgParser(
-            description="Interactive command line interface to connect and control multiple drones")
-        subparsers = self.parser.add_subparsers(title="command",
-                                                description="Command to execute.", dest="command")
+        self.dm.add_plugin_load_func(self._load_plugin_commands)
+        self.dm.add_plugin_unload_func(self._unload_plugin_commands)
 
-        connect_parser = subparsers.add_parser("connect", help="Connect a drone")
+        for plugin_name in DEFAULT_PLUGINS:
+            self.dm.load_plugin(plugin_name)
+
+    def _base_parser(self):
+        parser = ArgParser(description="Interactive command line interface to connect and control multiple drones")
+        command_parsers = parser.add_subparsers(title="command", description="Command to execute.", dest="command")
+
+        connect_parser = command_parsers.add_parser("connect", help="Connect a drone")
         connect_parser.add_argument("drone", type=str, help="Name for the drone.")
         connect_parser.add_argument("drone_address", type=str, nargs='?',
                                     help="Connection string. Something like udp://:14540")
@@ -177,27 +191,27 @@ class CommandScreen(Screen):
         connect_parser.add_argument("-t", "--timeout", type=float, default=120, required=False,
                                     help="Timeout in seconds for connection attempts. Default 120s.")
 
-        disconnect_parser = subparsers.add_parser("disconnect", help="Disconnect one or more drones.")
+        disconnect_parser = command_parsers.add_parser("disconnect", help="Disconnect one or more drones.")
         disconnect_parser.add_argument("drones", type=str, nargs="+", help="Which drones to disconnect.")
         disconnect_parser.add_argument("-f", "--force", action="store_true",
                                        help="If this flag is set, ignore any potential checks and force the disconnect.")
 
-        arm_parser = subparsers.add_parser("arm", help="Arm the named drone(s).")
+        arm_parser = command_parsers.add_parser("arm", help="Arm the named drone(s).")
         arm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to arm")
         arm_parser.add_argument("-s", "--schedule", action="store_true",
                                 help="Queue this action instead of executing immediately.")
 
-        disarm_parser = subparsers.add_parser("disarm", help="Disarm the named drone(s).")
+        disarm_parser = command_parsers.add_parser("disarm", help="Disarm the named drone(s).")
         disarm_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to disarm")
         disarm_parser.add_argument("-s", "--schedule", action="store_true",
                                    help="Queue this action instead of executing immediately.")
 
-        takeoff_parser = subparsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
+        takeoff_parser = command_parsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
         takeoff_parser.add_argument("-s", "--schedule", action="store_true",
                                     help="Queue this action instead of executing immediately.")
 
-        flight_mode_parser = subparsers.add_parser("mode", help="Change the drone(s) flight mode")
+        flight_mode_parser = command_parsers.add_parser("mode", help="Change the drone(s) flight mode")
         flight_mode_parser.add_argument("mode", type=str,
                                         help=f"Target flight mode. Must be one of {self.dm.drone_class.VALID_FLIGHTMODES}.")
         flight_mode_parser.add_argument("drones", type=str, nargs="+",
@@ -205,7 +219,7 @@ class CommandScreen(Screen):
         flight_mode_parser.add_argument("-s", "--schedule", action="store_true",
                                         help="Queue this action instead of executing immediately.")
 
-        fly_to_parser = subparsers.add_parser("flyto", help="Send the drone to a local coordinate.")
+        fly_to_parser = command_parsers.add_parser("flyto", help="Send the drone to a local coordinate.")
         fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
         fly_to_parser.add_argument("x", type=float, help="Target x coordinate")
         fly_to_parser.add_argument("y", type=float, help="Target y coordinate")
@@ -217,7 +231,7 @@ class CommandScreen(Screen):
         fly_to_parser.add_argument("-s", "--schedule", action="store_true",
                                    help="Queue this action instead of executing immediately.")
 
-        fly_to_gps_parser = subparsers.add_parser("flytogps", help="Send the drone to a GPS coordinate")
+        fly_to_gps_parser = command_parsers.add_parser("flytogps", help="Send the drone to a GPS coordinate")
         fly_to_gps_parser.add_argument("drone", type=str, help="Name of the drone")
         fly_to_gps_parser.add_argument("lat", type=float, help="Target latitude")
         fly_to_gps_parser.add_argument("long", type=float, help="Target longitude")
@@ -229,7 +243,7 @@ class CommandScreen(Screen):
         fly_to_gps_parser.add_argument("-s", "--schedule", action="store_true",
                                        help="Queue this action instead of executing immediately.")
 
-        move_parser = subparsers.add_parser("move", help="Send the drones x, y, z meters north, east or down.")
+        move_parser = command_parsers.add_parser("move", help="Send the drones x, y, z meters north, east or down.")
         move_parser.add_argument("drone", type=str, help="Name of the drone")
         move_parser.add_argument("x", type=float, help="How many meters to move north (negative for south).")
         move_parser.add_argument("y", type=float, help="How many meters to move east (negative for west).")
@@ -245,72 +259,115 @@ class CommandScreen(Screen):
         move_parser.add_argument("-s", "--schedule", action="store_true",
                                  help="Queue this action instead of executing immediately.")
 
-        land_parser = subparsers.add_parser("land", help="Land the drone(s)")
+        land_parser = command_parsers.add_parser("land", help="Land the drone(s)")
         land_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to land")
         land_parser.add_argument("-s", "--schedule", action="store_true", help="Queue this action instead of "
                                                                                "executing immediately.")
 
-        pause_parser = subparsers.add_parser("pause", help="Pause the drone(s) task execution")
+        pause_parser = command_parsers.add_parser("pause", help="Pause the drone(s) task execution")
         pause_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to pause")
 
-        resume_parser = subparsers.add_parser("resume", help="Resume the drone(s) task execution")
+        resume_parser = command_parsers.add_parser("resume", help="Resume the drone(s) task execution")
         resume_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to resume")
 
-        stop_parser = subparsers.add_parser("stop", help="Stops (i.e. lands) drones. If no drones are listed, "
-                                                         "stops all of them and then exits the application")
+        stop_parser = command_parsers.add_parser("stop", help="Stops (i.e. lands) drones. If no drones are listed,"
+                                                 " stops all of them and then exits the application")
         stop_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to stop.")
 
-        kill_parser = subparsers.add_parser("kill", help="Kills (i.e. disarms and stops everything) drones. If no "
-                                                         "drones are listed, kills all of them.")
+        kill_parser = command_parsers.add_parser("kill", help="Kills (i.e. disarms and stops everything) drones. "
+                                                 "If no drones are listed, kills all of them.")
         kill_parser.add_argument("drones", type=str, nargs="*", help="Drone(s) to kill.")
 
-        exit_parser = subparsers.add_parser("exit", help="Exits the application")
+        plugin_load_parser = command_parsers.add_parser("load", help="Loads a given plugin.")
+        plugin_load_parser.add_argument("plugin", type=str, help="Plugin name to load.")
 
-        gimbal_control_parser = subparsers.add_parser("gmbl-control", help="Takes control of the gimbal of the given drone")
-        gimbal_control_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
+        plugin_load_parser = command_parsers.add_parser("unload", help="Unloads a given plugin.")
+        plugin_load_parser.add_argument("plugin", type=str, help="Plugin name to unload.")
 
-        gimbal_release_parser = subparsers.add_parser("gmbl-release", help="Releases control of the gimbal of the given drone")
-        gimbal_release_parser.add_argument("drone", type=str, help="Drones gimbal to release control of.")
+        available_plugin_parser = command_parsers.add_parser("plugins", help="Prints a list of available plugins")
 
-        gimbal_status_parser = subparsers.add_parser("gmbl-status", help="Logs gimbal status")
-        gimbal_status_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
+        loaded_plugin_parser = command_parsers.add_parser("loaded", help="Prints a list of loaded plugins")
 
-        gimbal_rotate_parser = subparsers.add_parser("gmbl-rotate", help="Set the angles the gimbal should point to")
-        gimbal_rotate_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        gimbal_rotate_parser.add_argument("roll", type=float, help="Roll angle of the gimbal.")
-        gimbal_rotate_parser.add_argument("pitch", type=float, help="Pitch angle of the gimbal.")
-        gimbal_rotate_parser.add_argument("yaw", type=float, help="Yaw angle of the gimbal.")
+        exit_parser = command_parsers.add_parser("exit", help="Exits the application")
 
-        gimbal_point_parser = subparsers.add_parser("gmbl-point", help="Keep the gimbal pointed at a target location")
-        gimbal_point_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        gimbal_point_parser.add_argument("lat", type=float, help="Target distance north or latitude.")
-        gimbal_point_parser.add_argument("long", type=float, help="Target distance east or longitude")
-        gimbal_point_parser.add_argument("amsl", type=float, help="Target distance down or amsl")
-        gimbal_point_parser.add_argument("-a", "--absolute", action="store_true",
-                                         help="Use absolute instead of relative coordinates.")
+        # gimbal_control_parser = subparsers.add_parser("gmbl-control",
+        #                                               help="Takes control of the gimbal of the given drone")
+        # gimbal_control_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
+        #
+        # gimbal_release_parser = subparsers.add_parser("gmbl-release",
+        #                                               help="Releases control of the gimbal of the given drone")
+        # gimbal_release_parser.add_argument("drone", type=str, help="Drones gimbal to release control of.")
+        #
+        # gimbal_status_parser = subparsers.add_parser("gmbl-status", help="Logs gimbal status")
+        # gimbal_status_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
+        #
+        # gimbal_rotate_parser = subparsers.add_parser("gmbl-rotate", help="Set the angles the gimbal should point to")
+        # gimbal_rotate_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        # gimbal_rotate_parser.add_argument("roll", type=float, help="Roll angle of the gimbal.")
+        # gimbal_rotate_parser.add_argument("pitch", type=float, help="Pitch angle of the gimbal.")
+        # gimbal_rotate_parser.add_argument("yaw", type=float, help="Yaw angle of the gimbal.")
+        #
+        # gimbal_point_parser = subparsers.add_parser("gmbl-point", help="Keep the gimbal pointed at a target location")
+        # gimbal_point_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        # gimbal_point_parser.add_argument("lat", type=float, help="Target distance north or latitude.")
+        # gimbal_point_parser.add_argument("long", type=float, help="Target distance east or longitude")
+        # gimbal_point_parser.add_argument("amsl", type=float, help="Target distance down or amsl")
+        # gimbal_point_parser.add_argument("-a", "--absolute", action="store_true",
+        #                                  help="Use absolute instead of relative coordinates.")
+        #
+        # gimbal_mode_parser = subparsers.add_parser("gmbl-mode", help="Set the gimbal mode (follow or lock, etc)")
+        # gimbal_mode_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
+        # gimbal_mode_parser.add_argument("mode", type=str, choices=["follow", "lock"])
 
-        gimbal_mode_parser = subparsers.add_parser("gmbl-mode", help="Set the gimbal mode (follow or lock, etc)")
-        gimbal_mode_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        gimbal_mode_parser.add_argument("mode", type=str, choices=["follow", "lock"])
-
-        cam_prepare_parser = subparsers.add_parser("cam-prep", help="Prepare camera plugin")
+        cam_prepare_parser = command_parsers.add_parser("cam-prep", help="Prepare camera plugin")
         cam_prepare_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
-        cam_settings_parser = subparsers.add_parser("cam-settings", help="Start recording video")
+        cam_settings_parser = command_parsers.add_parser("cam-settings", help="Start recording video")
         cam_settings_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
-        cam_picture_parser = subparsers.add_parser("cam-photo", help="Take a picture")
+        cam_picture_parser = command_parsers.add_parser("cam-photo", help="Take a picture")
         cam_picture_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
-        cam_video_start_parser = subparsers.add_parser("cam-start", help="Start recording video")
+        cam_video_start_parser = command_parsers.add_parser("cam-start", help="Start recording video")
         cam_video_start_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
-        cam_video_stop_parser = subparsers.add_parser("cam-stop", help="Start recording video")
+        cam_video_stop_parser = command_parsers.add_parser("cam-stop", help="Start recording video")
         cam_video_stop_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
-        cam_zoom_parser = subparsers.add_parser("cam-zoom", help="Start recording video")
+        cam_zoom_parser = command_parsers.add_parser("cam-zoom", help="Start recording video")
         cam_zoom_parser.add_argument("drone", type=str, help="Which drones should take a picture")
         cam_zoom_parser.add_argument("zoom", type=float, help="Target zoom level")
+
+        return parser, command_parsers
+
+    async def _load_plugin_commands(self, plugin_name, plugin):
+        try:
+            self.logger.debug(f"Loading CLI commands for plugin {plugin_name}")
+            commands = plugin.cli_commands
+            for command_name in commands:
+                command = commands[command_name]
+                cli_command = f"{plugin.PREFIX}-{command_name}"
+                self.logger.debug(f"Inspecting command {command_name}")
+                tmp_parser = self.command_parser.add_parser(cli_command)
+                for arg in check_cli_command_signatures(command):
+                    is_invalid, name, is_list, is_required, accepts_none, base_type, is_kwonly = arg
+                    arg_name = name if is_required else f"--{name}"
+                    if is_invalid:
+                        raise RuntimeError(f"CLI command {command_name} has invalid parameter types for parameter {name}!")
+                    if is_list and is_required:
+                        tmp_parser.add_argument(arg_name, type=base_type, required=is_required, nargs="+")
+                    elif is_list and not is_required:
+                        tmp_parser.add_argument(arg_name, type=base_type, nargs="*")
+                    else:
+                        tmp_parser.add_argument(arg_name, type=base_type)
+                self.dynamic_commands[cli_command] = command
+        except Exception as e:
+            self.logger.warning("Failed to load CLI commands for the plugin!")
+            self.logger.debug(repr(e), exc_info=True)
+
+    async def _unload_plugin_commands(self, plugin_name, plugin):
+        # TODO: ALL OF IT
+        pass
 
     async def _add_drone_object(self, name, drone):
         output = self.query_one("#output", expect_type=Log)
@@ -348,81 +405,80 @@ class CommandScreen(Screen):
             if args.command != "kill" or args.drones:
                 self._kill_counter = 0
 
-            match args.command:
-                case "connect":
-                    address = args.drone_address
-                    if args.drone in DRONE_DICT and not address:
-                        address = DRONE_DICT[args.drone]
-                    elif not address:
-                        address = "udp://:14540"
-                    tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
-                                                                       args.server_port, address, args.timeout))
-                case "disconnect":
-                    tmp = asyncio.create_task(self.dm.disconnect(args.drones, force=args.force))
-                case "arm":
-                    tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
-                case "disarm":
-                    tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
-                case "takeoff":
-                    tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
-                case "mode":
-                    tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
-                case "flyto":
-                    tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+            if args.command == "connect":
+                address = args.drone_address
+                if args.drone in DRONE_DICT and not address:
+                    address = DRONE_DICT[args.drone]
+                elif not address:
+                    address = "udp://:14540"
+                tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
+                                                                   args.server_port, address, args.timeout))
+            elif args.command == "disconnect":
+                tmp = asyncio.create_task(self.dm.disconnect(args.drones, force=args.force))
+            elif args.command == "arm":
+                tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
+            elif args.command == "disarm":
+                tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
+            elif args.command == "takeoff":
+                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+            elif args.command == "mode":
+                tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
+            elif args.command == "flyto":
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+                                                         tol=args.tolerance, schedule=args.schedule))
+            elif args.command == "flytogps":
+                tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
                                                              tol=args.tolerance, schedule=args.schedule))
-                case "flytogps":
-                    tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                                 tol=args.tolerance, schedule=args.schedule))
-                case "move":
-                    tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw,
-                                                           no_gps=args.nogps, tol=args.tolerance,
-                                                           schedule=args.schedule))
-                case "land":
-                    tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
-                case "pause":
-                    self.dm.pause(args.drones)
-                case "resume":
-                    self.dm.resume(args.drones)
-                case "stop":
-                    tmp = asyncio.create_task(self.dm.action_stop(args.drones))
-                case "kill":
-                    if not args.drones:
-                        if self._kill_counter:
-                            tmp = asyncio.create_task(self.dm.kill(args.drones))
-                        else:
-                            self.logger.warning("Are you sure? Enter kill again")
-                            self._kill_counter += 1
-                    else:
+            elif args.command == "move":
+                tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw, no_gps=args.nogps,
+                                                       tol=args.tolerance, schedule=args.schedule))
+            elif args.command == "land":
+                tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
+            elif args.command == "pause":
+                self.dm.pause(args.drones)
+            elif args.command == "resume":
+                self.dm.resume(args.drones)
+            elif args.command == "stop":
+                tmp = asyncio.create_task(self.dm.action_stop(args.drones))
+            elif args.command == "kill":
+                if not args.drones:
+                    if self._kill_counter:
                         tmp = asyncio.create_task(self.dm.kill(args.drones))
-                case "exit":
-                    tmp = asyncio.create_task(self.exit())
-                case "gmbl-status":
-                    self.dm.log_status(args.drone)
-                case "gmbl-control":
-                    tmp = asyncio.create_task(self.dm.take_control(args.drone))
-                case "gmbl-release":
-                    tmp = asyncio.create_task(self.dm.release_control(args.drone))
-                case "gmbl-rotate":
-                    tmp = asyncio.create_task(self.dm.set_gimbal_angles(args.drone, args.roll, args.pitch, args.yaw))
-                case "gmbl-point":
-                    if args.absolute:
-                        tmp = asyncio.create_task(self.dm.point_gimbal_at(args.drone, args.lat, args.long, args.amsl))
                     else:
-                        tmp = asyncio.create_task(self.dm.point_gimbal_at_relative(args.drone, args.lat, args.long, args.amsl))
-                case "gmbl-mode":
-                    tmp = asyncio.create_task(self.dm.set_gimbal_mode(args.drone, args.mode))
-                case "cam-prep":
-                    tmp = asyncio.create_task(self.dm.prepare(args.drone))
-                case "cam-settings":
-                    tmp = asyncio.create_task(self.dm.get_settings(args.drone))
-                case "cam-photo":
-                    tmp = asyncio.create_task(self.dm.take_picture(args.drone))
-                case "cam-start":
-                    tmp = asyncio.create_task(self.dm.start_video(args.drone))
-                case "cam-stop":
-                    tmp = asyncio.create_task(self.dm.stop_video(args.drone))
-                case "cam-zoom":
-                    tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
+                        self.logger.warning("Are you sure? Enter kill again")
+                        self._kill_counter += 1
+                else:
+                    tmp = asyncio.create_task(self.dm.kill(args.drones))
+            elif args.command == "load":
+                tmp = asyncio.create_task(self.dm.load_plugin(args.plugin))
+            elif args.command == "unload":
+                tmp = asyncio.create_task(self.dm.unload_plugin(args.plugin))
+            elif args.command == "loaded":
+                self.logger.info(f"Currently loaded plugins: {self.dm.currently_loaded_plugins()}")
+            elif args.command == "plugins":
+                available_but_not_loaded = [item for item in self.dm.plugin_options()
+                                            if item not in self.dm.currently_loaded_plugins()]
+                self.logger.info(f"Available plugins to load: {available_but_not_loaded}")
+            elif args.command == "exit":
+                tmp = asyncio.create_task(self.exit())
+            elif args.command in self.dynamic_commands:
+                self.logger.debug(f"Performing plugin action {args.command}")
+                func_arguments = vars(args).copy()
+                func_arguments.pop("command")
+                tmp = asyncio.create_task(self.dynamic_commands[args.command](**func_arguments))
+
+            elif args.command == "cam-prep":
+                tmp = asyncio.create_task(self.dm.prepare(args.drone))
+            elif args.command == "cam-settings":
+                tmp = asyncio.create_task(self.dm.get_settings(args.drone))
+            elif args.command == "cam-photo":
+                tmp = asyncio.create_task(self.dm.take_picture(args.drone))
+            elif args.command == "cam-start":
+                tmp = asyncio.create_task(self.dm.start_video(args.drone))
+            elif args.command == "cam-stop":
+                tmp = asyncio.create_task(self.dm.stop_video(args.drone))
+            elif args.command == "cam-zoom":
+                tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
