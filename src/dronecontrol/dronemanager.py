@@ -90,7 +90,7 @@ class DroneManager:
                     self.logger.warning(f"A drone called {name} already exists. Each drone must have a unique name.")
                     return False
                 if not mavsdk_server_address:
-                        mavsdk_server_port = get_free_port()
+                    mavsdk_server_port = get_free_port()
                 # Check that we don't already have this drone connected.
                 for other_name in self.drones:
                     other_drone = self.drones[other_name]
@@ -363,29 +363,6 @@ class DroneManager:
         await asyncio.gather(*unload_tasks, return_exceptions=True)
         await plugin.close()
         delattr(self, plugin_name)
-
-# Gimbal Stuff #########################################################################################################
-
-    def log_status(self, name):
-        self.drones[name].log_status()
-
-    async def take_control(self, name):
-        await self.drones[name].take_control()
-
-    async def release_control(self, name):
-        await self.drones[name].release_control()
-
-    async def set_gimbal_angles(self, name, roll, pitch, yaw):
-        await self.drones[name].set_gimbal_angles(roll, pitch, yaw)
-
-    async def point_gimbal_at(self, name, lat, long, amsl):
-        await self.drones[name].point_gimbal_at(lat, long, amsl)
-
-    async def point_gimbal_at_relative(self, name, x, y, z):
-        await self.drones[name].point_gimbal_at_relative(x, y, z)
-
-    async def set_gimbal_mode(self, name, mode):
-        await self.drones[name].set_gimbal_mode(mode)
 
 # Camera Stuff #########################################################################################################
 

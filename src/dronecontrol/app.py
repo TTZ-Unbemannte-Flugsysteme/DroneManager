@@ -290,35 +290,6 @@ class CommandScreen(Screen):
 
         exit_parser = command_parsers.add_parser("exit", help="Exits the application")
 
-        # gimbal_control_parser = subparsers.add_parser("gmbl-control",
-        #                                               help="Takes control of the gimbal of the given drone")
-        # gimbal_control_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
-        #
-        # gimbal_release_parser = subparsers.add_parser("gmbl-release",
-        #                                               help="Releases control of the gimbal of the given drone")
-        # gimbal_release_parser.add_argument("drone", type=str, help="Drones gimbal to release control of.")
-        #
-        # gimbal_status_parser = subparsers.add_parser("gmbl-status", help="Logs gimbal status")
-        # gimbal_status_parser.add_argument("drone", type=str, help="Drones gimbal to take control of.")
-        #
-        # gimbal_rotate_parser = subparsers.add_parser("gmbl-rotate", help="Set the angles the gimbal should point to")
-        # gimbal_rotate_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        # gimbal_rotate_parser.add_argument("roll", type=float, help="Roll angle of the gimbal.")
-        # gimbal_rotate_parser.add_argument("pitch", type=float, help="Pitch angle of the gimbal.")
-        # gimbal_rotate_parser.add_argument("yaw", type=float, help="Yaw angle of the gimbal.")
-        #
-        # gimbal_point_parser = subparsers.add_parser("gmbl-point", help="Keep the gimbal pointed at a target location")
-        # gimbal_point_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        # gimbal_point_parser.add_argument("lat", type=float, help="Target distance north or latitude.")
-        # gimbal_point_parser.add_argument("long", type=float, help="Target distance east or longitude")
-        # gimbal_point_parser.add_argument("amsl", type=float, help="Target distance down or amsl")
-        # gimbal_point_parser.add_argument("-a", "--absolute", action="store_true",
-        #                                  help="Use absolute instead of relative coordinates.")
-        #
-        # gimbal_mode_parser = subparsers.add_parser("gmbl-mode", help="Set the gimbal mode (follow or lock, etc)")
-        # gimbal_mode_parser.add_argument("drone", type=str, help="Which drones gimbal to command")
-        # gimbal_mode_parser.add_argument("mode", type=str, choices=["follow", "lock"])
-
         cam_prepare_parser = command_parsers.add_parser("cam-prep", help="Prepare camera plugin")
         cam_prepare_parser.add_argument("drone", type=str, help="Which drones should take a picture")
 
@@ -482,6 +453,7 @@ class CommandScreen(Screen):
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
 
     async def exit(self):
         """ Checks if any drones are armed and exits the app if not."""

@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 # TODO: Figure out scheduling
 #   Have to interact with drone queues ("Move to position X, then turn gimbal, then move to position Y)
 #   BUT, also want to perform plugin actions immediately mid flight without killing other drone tasks, (except if we do)
-# TODO: Figure out how to do help strings for plugins, nargs, general CLI information.
+# TODO: Figure out how to do help strings for plugins, choices, store_true, etc... general CLI information.
 
 class Plugin(ABC):
     """ Generic plugin class.
