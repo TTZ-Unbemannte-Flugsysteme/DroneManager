@@ -9,7 +9,6 @@ import platform
 import time
 from subprocess import Popen, DEVNULL
 from abc import ABC, abstractmethod
-from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -25,8 +24,6 @@ from mavsdk.camera import CameraError
 from dronecontrol.utils import dist_ned, dist_gps, relative_gps, heading_ned, heading_gps
 from dronecontrol.utils import parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
-
-from dronecontrol.GMP3 import GMP3, GMP3Config
 
 import logging
 
@@ -391,8 +388,7 @@ class DroneMAVSDK(Drone):
         self.position_update_rate = 5
 
         self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
-        #self.trajectory_generator = StaticWaypoints(self, self.logger, WayPointType.POS_NED)
-        self.trajectory_generator = GMP3Gen(self, 1/self.position_update_rate, self.logger)
+        self.trajectory_generator = StaticWaypoints(self, self.logger, WayPointType.POS_NED)
         self.trajectory_follower = DirectSetpointFollower(self, self.logger, 1/self.position_update_rate, WayPointType.POS_VEL_NED)
         #self.trajectory_follower = VelocityControlFollower(self, self.logger, 1/self.position_update_rate)
 
@@ -1229,78 +1225,6 @@ class StaticWaypoints(TrajectoryGenerator):
     def next(self):
         """ Should return None if the generator isn't ready to produce waypoints yet."""
         return self.target_position
-
-
-class GMP3Gen(TrajectoryGenerator):
-
-    # TODO: GMP3 currently doesn't run with less than 2 obstacles
-    # TODO: Altitude and yaw. Both are currently just set immediately when we get a new target
-
-    WAYPOINT_TYPES = {WayPointType.POS_VEL_NED}
-    CAN_DO_GPS = False
-
-    def __init__(self, drone, dt, logger, use_gps=False, ):
-        super().__init__(drone, logger, waypoint_type=WayPointType.POS_VEL_NED, use_gps=use_gps)
-        self.GMP3_PARAMS = {
-            "maxit": 100,
-            "alpha": 0.8,
-            "wdamp": 1,
-            "delta": 0.01,
-            "vx_max": 0.5,
-            "vy_max": 0.5,
-            "Q11": 0.7,
-            "Q22": 0.7,
-            "Q12": 0.01,
-            "dt": dt,
-            "obstacles": [
-                (3, 0, 1.0),
-                (0, 3, 1.0),
-                (7, 7, 1.0)
-            ],
-        }
-        self.config = GMP3Config(**self.GMP3_PARAMS)
-        self.gmp3 = GMP3(self.config)
-        self.waypoints = None
-        self.start_time = None
-        attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
-        self.logger.debug(f"Initialized trajectory generator {self.__class__.__name__}:\n   {attr_string}")
-
-    async def create_trajectory(self):
-        self.logger.info("Calculating path...")
-        cur_x, cur_y, _ = self.drone.position_ned
-        target_x, target_y, _ = self.target_position.pos
-        with ProcessPoolExecutor(max_workers=2) as executor:
-            self.waypoints = await asyncio.get_running_loop().run_in_executor(executor, _calculate_path, cur_x,
-                                                                              cur_y, target_x, target_y, self.gmp3)
-        self.logger.info("Found path!")
-        self.logger.debug(f"Generated {len(self.waypoints)} waypoints: {self.waypoints}")
-        self.start_time = time.time_ns()/1e9
-
-    def next(self) -> Waypoint | None:
-        current_waypoint = None
-        for wp in self.waypoints:
-            if time.time_ns()/1e9 <= self.start_time + wp[0]:
-                current_waypoint = wp
-                break
-        if current_waypoint is None:
-            return None
-        t, x, y, xdot, ydot = current_waypoint
-        waypoint = Waypoint(WayPointType.POS_VEL_NED,
-                            pos=np.asarray([x, y, self.target_position.pos[2]]),
-                            vel=np.asarray([xdot, ydot, 0]),
-                            yaw=self.target_position.yaw)
-        return waypoint
-
-
-def _calculate_path(cur_x, cur_y, target_x, target_y, gmp3):
-    gmp3.calculate((cur_x, cur_y), (target_x, target_y))
-    ts = gmp3.t
-    xs = gmp3.x
-    ys = gmp3.y
-    xdots = gmp3.xdot
-    ydots = gmp3.ydot
-    waypoints = list(zip(ts, xs, ys, xdots, ydots))
-    return waypoints
 
 
 ##################################################################################################

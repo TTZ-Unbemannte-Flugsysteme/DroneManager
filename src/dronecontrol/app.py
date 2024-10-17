@@ -5,7 +5,6 @@ import shlex
 
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import Drone, DroneMAVSDK
-from dronecontrol.redcross import RedCross
 from dronecontrol.utils import common_formatter, check_cli_command_signatures
 
 import textual.css.query
@@ -168,7 +167,6 @@ class CommandScreen(Screen):
 
         self.dm.add_connect_func(self._add_drone_object)
         self.dm.add_remove_func(self._remove_drone_object)
-        self.redcross = RedCross(self.logger, self.dm)
 
         self.dm.add_plugin_load_func(self._load_plugin_commands)
         self.dm.add_plugin_unload_func(self._unload_plugin_commands)
@@ -471,56 +469,10 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.dm.stop_video(args.drone))
             elif args.command == "cam-zoom":
                 tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
-            elif args.command == "qualify":
-                self.qualify(args.drones, args.altitude)
-            elif args.command == "rc-add":
-                self.rc_add_drones(args.drones)
-            elif args.command == "rc-rm":
-                self.rc_remove_drones(args.drones)
-            elif args.command == "rc-stage":
-                tmp = asyncio.create_task(self.rc_stages(args.stage))
             self.running_tasks.add(tmp)
         except Exception as e:
             self.logger.error(repr(e))
             self.logger.debug(repr(e), exc_info=True)
-
-    def qualify(self, names, altitude=2.0):
-        good_names = []
-        for name in names:
-            if name in self.dm.drones:
-                good_names.append(name)
-            else:
-                self.logger.warning(f"No drone named {name}")
-        for name in good_names:
-            asyncio.create_task(self.redcross.qualify(name, altitude))
-
-    def rc_add_drones(self, names):
-        for name in names:
-            if name not in self.dm.drones:
-                self.logger.warning(f"Can't add {name} to demo, no drone with that name!")
-            else:
-                self.redcross.add(name)
-        self.logger.info(f"{self.redcross.current_drone_list()} currently taking part!")
-
-    def rc_remove_drones(self, names):
-        for name in names:
-            if name not in self.dm.drones or name not in self.redcross.drones:
-                self.logger.warning(f"Can't remove {name} to demo, no drone with that name!")
-            else:
-                self.redcross.remove(name)
-        self.logger.info(f"{self.redcross.current_drone_list()} currently taking part!")
-
-    async def rc_stages(self, stage):
-        if stage == 1:
-            await self.redcross.stage_1()
-        elif stage == 2:
-            await self.redcross.stage_2()
-        elif stage == 3:
-            await self.redcross.stage_3()
-        elif stage == 4:
-            await self.redcross.stage_4()
-        elif stage == 5:
-            await self.redcross.stage_5()
 
     async def action_stop(self, names):
         stop_app = False
