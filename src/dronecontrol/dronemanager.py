@@ -3,14 +3,19 @@ import datetime
 import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
-import random
 
 from dronecontrol.drone import Drone, parse_address
+from dronecontrol.utils import common_formatter, get_free_port
 
 import logging
 
+from dronecontrol.gimbal import GimbalPlugin
 
-common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+PLUGINS = {
+    "gimbal": GimbalPlugin,
+}
+
+
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
 DRONE_DICT = {
@@ -40,6 +45,13 @@ class DroneManager:
         self._on_drone_removal_coros = set()
         self._on_drone_connect_coros = set()
 
+        self._on_plugin_load_coros = set()
+        self._on_plugin_unload_coros = set()
+        self.plugins = set()
+
+        self.system_id = 246
+        self.component_id = 190
+
         if logger is None:
             self.logger = logging.getLogger("Manager")
             self.logger.setLevel(logging.DEBUG)
@@ -54,23 +66,20 @@ class DroneManager:
         else:
             self.logger = logger
 
-    @property
-    def used_drone_addrs(self):
-        return [drone.drone_addr for drone in self.drones.values()]
-
     async def connect_to_drone(self,
                                name: str,
                                mavsdk_server_address: str | None,
                                mavsdk_server_port: int,
                                drone_address: str,
-                               timeout: float, compid=190):
+                               timeout: float):
         try:
             scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
-            self.logger.info(repr(e))
+            self.logger.warning("Couldn't connect due to an exception: ", repr(e))
+            self.logger.debug(repr(e), exc_info=True)
             return False
         if scheme == "serial":
-            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}")
+            self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr} with baud {parsed_port}")
         else:
             self.logger.info(f"Trying to connect to drone {name} @{scheme}://{parsed_addr}:{parsed_port}")
         drone = None
@@ -81,12 +90,7 @@ class DroneManager:
                     self.logger.warning(f"A drone called {name} already exists. Each drone must have a unique name.")
                     return False
                 if not mavsdk_server_address:
-                    used_ports = [drone.server_port for drone in self.drones.values()]
-                    used_compids = [drone.compid for drone in self.drones.values()]
-                    while mavsdk_server_port in used_ports:
-                        mavsdk_server_port = random.randint(10000, 60000)
-                    while compid in used_compids:
-                        compid += 1
+                    mavsdk_server_port = get_free_port()
                 # Check that we don't already have this drone connected.
                 for other_name in self.drones:
                     other_drone = self.drones[other_name]
@@ -94,9 +98,10 @@ class DroneManager:
                     if parsed_addr == other_addr and parsed_port == other_port:
                         self.logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
-                drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port, compid=compid)
+                drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 try:
-                    connected = await asyncio.wait_for(drone.connect(drone_address), timeout)
+                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
+                                                                     component_id=self.component_id), timeout)
                 except (TimeoutError, CancelledError):
                     self.logger.warning(f"Connection attempts to {name} timed out!")
                     await self._remove_drone_object(name, drone)
@@ -133,6 +138,7 @@ class DroneManager:
                     await self._remove_drone_object(name, drone)
                 return False
             except Exception as e:
+                self.logger.info("Couldn't connect to the drone due to an exception: ", repr(e))
                 self.logger.debug(repr(e), exc_info=True)
                 if drone is not None:
                     await self._remove_drone_object(name, drone)
@@ -246,18 +252,6 @@ class DroneManager:
                                         schedule=schedule,
                                         use_gps=not no_gps, tolerance=tol)
 
-    ### TEMP FUNCTIONS, GIMBAL AND CAMERA HANDLING IS VERY WIP
-
-    async def gimbal_rotate_to(self, name, roll, pitch, yaw, schedule=True):
-        await self._single_drone_action(self.drone_class.set_gimbal_angles, name,
-                                        f"Setting gimbal angles to R{roll}, P{pitch}, Y{yaw}",
-                                        roll, pitch, yaw,
-                                        schedule=schedule)
-
-    async def take_picture(self, name, schedule=True):
-        await self._single_drone_action(self.drone_class.take_picture, name, f"{name} capturing a picture",
-                                        schedule=schedule)
-
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:
             await self.drones[name].orbit(radius, velocity, center_lat, center_long, amsl)
@@ -316,6 +310,7 @@ class DroneManager:
             except Exception as e:
                 self.logger.debug(repr(e), exc_info=True)
         if drone is not None:
+            await drone.stop_execution()
             del drone
 
     def add_remove_func(self, func):
@@ -323,3 +318,69 @@ class DroneManager:
 
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
+
+# PLUGINS ##############################################################################################################
+
+    def plugin_options(self):
+        return PLUGINS.keys()
+
+    def currently_loaded_plugins(self):
+        return self.plugins
+
+    def add_plugin_load_func(self, func):
+        self._on_plugin_load_coros.add(func)
+
+    def add_plugin_unload_func(self, func):
+        self._on_drone_connect_coros.add(func)
+
+    async def load_plugin(self, plugin_name):
+        # Create plugin instance, add plugin commands (how???)
+        if plugin_name in self.plugins:
+            self.logger.warning(f"Plugin {plugin_name} already loaded!")
+            return False
+        if plugin_name not in PLUGINS:
+            self.logger.warning(f"No plugin '{plugin_name}' found!")
+            return False
+        self.logger.info(f"Loading plugin {plugin_name}...")
+        self.plugins.add(plugin_name)
+        plugin = PLUGINS[plugin_name](self, self.logger)
+        setattr(self, plugin_name, plugin)
+        await plugin.start()
+        self.logger.debug(f"Performing callbacks for plugin loading...")
+        for func in self._on_plugin_load_coros:
+            self.running_tasks.add(asyncio.create_task(func(plugin_name, plugin)))
+        self.logger.info(f"Plugin {plugin_name} fully loaded!")
+
+    async def unload_plugin(self, plugin_name):
+        if plugin_name not in self.plugins:
+            self.logger.warning(f"No plugin named {plugin_name} loaded!")
+            return False
+        self.logger.info(f"Unloading plugin {plugin_name}")
+        self.plugins.remove(plugin_name)
+        plugin = getattr(self, plugin_name)
+        unload_tasks = set()
+        for func in self._on_plugin_unload_coros:
+            unload_tasks.add(func(plugin_name, plugin))
+        await asyncio.gather(*unload_tasks, return_exceptions=True)
+        await plugin.close()
+        delattr(self, plugin_name)
+
+# Camera Stuff #########################################################################################################
+
+    async def prepare(self, name):
+        await self.drones[name].prepare()
+
+    async def get_settings(self, name):
+        await self.drones[name].get_settings()
+
+    async def take_picture(self, name):
+        await self.drones[name].take_picture()
+
+    async def start_video(self, name):
+        await self.drones[name].start_video()
+
+    async def stop_video(self, name):
+        await self.drones[name].stop_video()
+
+    async def set_zoom(self, name, zoom):
+        await self.drones[name].set_zoom(zoom)

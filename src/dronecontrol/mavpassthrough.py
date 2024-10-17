@@ -1,25 +1,31 @@
 import logging
 import datetime
+import math
 import time
 import os
 import asyncio
 
 from pymavlink import mavutil
 
-# from pymavlink.dialects.v20 import cubepilot
-
-formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
+from dronecontrol.utils import common_formatter
 
 # TODO: Routing between multiple GCS so we can have my app and QGroundControl connected at the same time
+# TODO: Implement sending as drone/drone components
 
 
 class MAVPassthrough:
-    def __init__(self, dialect="cubepilot", loggername="passthrough", log_messages=True):
+    def __init__(self, dialect=None, loggername="passthrough", log_messages=True):
         self.dialect = dialect
         self.source_system = 246
         self.source_component = 201
-        self.con_drone_in: mavutil.mavudp | None = None
+        self.con_drone_in: mavutil.mavudp | mavutil.mavserial | None = None
         self.con_gcs: mavutil.mavudp | None = None
+
+        self.drone_system = 0
+        self.drone_component = 0
+        self.drone_autopilot = None
+        self.gcs_system = 0
+        self.gcs_component = 0
 
         self.time_of_last_gcs = 0
         self.time_of_last_drone = 0
@@ -33,7 +39,7 @@ class MAVPassthrough:
         os.makedirs(logdir, exist_ok=True)
         file_handler = logging.FileHandler(os.path.join(logdir, filename))
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(common_formatter)
         self.logger.addHandler(file_handler)
         self.logging_handlers = []
         self.logging_handlers.append(file_handler)
@@ -52,9 +58,13 @@ class MAVPassthrough:
         self.running_tasks.add(asyncio.create_task(self._send_heartbeats_gsc()))
         await asyncio.sleep(0)
         self.logger.debug("Waiting for GCS heartbeat")
-        while not self.con_gcs.wait_heartbeat(blocking=False):
+        gcs_heartbeat = self.con_gcs.wait_heartbeat(blocking=False)
+        while not gcs_heartbeat:
             await asyncio.sleep(0.05)
-        self.logger.debug("Got GCS heartbeat")
+            gcs_heartbeat = self.con_gcs.wait_heartbeat(blocking=False)
+        self.gcs_system = gcs_heartbeat.get_srcSystem()
+        self.gcs_component = gcs_heartbeat.get_srcComponent()
+        self.logger.debug(f"Got GCS {self.gcs_system, self.gcs_component} heartbeat.")
         self.time_of_last_gcs = time.time_ns()
         self.running_tasks.add(asyncio.create_task(self._send_pings_gcs()))
         self.running_tasks.add(asyncio.create_task(self._listen_gcs()))
@@ -75,20 +85,7 @@ class MAVPassthrough:
                                                           source_component=self.source_component,
                                                           dialect=self.dialect)
 
-            received_hb = 0
-            while received_hb < 3:
-                self.logger.debug("Sending initial drone heartbeat")
-                tmp_con_drone_in.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
-                                                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                                                    0, 0, 0)
-                await asyncio.sleep(0.1)
-                m = tmp_con_drone_in.wait_heartbeat(blocking=False)
-                if m is not None:
-                    if m.get_srcSystem() != self.source_system and m.get_srcComponent() != self.source_component:
-                        received_hb += 1
-                        self.logger.debug(f"Got drone heartbeat! Received {received_hb} total")
-                await asyncio.sleep(0.2)
-
+            await self._process_initial_drone_connection(tmp_con_drone_in)
             tmp_con_drone_in.close()
 
             self.con_drone_in = mavutil.mavlink_connection(f"{path}",
@@ -117,19 +114,7 @@ class MAVPassthrough:
                                                           source_system=self.source_system,
                                                           source_component=self.source_component, dialect=self.dialect)
 
-            received_hb = 0
-            while received_hb < 1:
-                self.logger.debug("Sending initial drone heartbeat")
-                tmp_con_drone_out.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS,
-                                                     mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                                                     0, 0, 0)
-                await asyncio.sleep(0.1)
-                m = tmp_con_drone_in.wait_heartbeat(blocking=False)
-                if m is not None:
-                    if m.get_srcSystem() != self.source_system and m.get_srcComponent() != self.source_component:
-                        received_hb += 1
-                        self.logger.debug(f"Got drone heartbeat! Received {received_hb} total")
-                await asyncio.sleep(0.2)
+            await self._process_initial_drone_connection(tmp_con_drone_in, tmp_con_drone_out)
 
             tmp_con_drone_in.close()
             tmp_con_drone_out.close()
@@ -144,6 +129,33 @@ class MAVPassthrough:
         except Exception as e:
             self.logger.debug(f"Error during connection to drone: {repr(e)}", exc_info=True)
 
+    async def _process_initial_drone_connection(self, con_in, con_out=None):
+        if con_out is None:
+            con_out = con_in
+        received_hb = 0
+        while received_hb < 3:
+            self.logger.debug("Sending initial drone heartbeats")
+            con_out.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+            m = con_in.wait_heartbeat(blocking=False)
+            if m is not None:
+                if m.get_srcSystem() != self.source_system and m.get_srcComponent() == 1:
+                    received_hb += 1
+                    self.drone_system = m.get_srcSystem()
+                    self.drone_component = m.get_srcComponent()
+                    self.logger.debug(f"Got drone {self.drone_system, self.drone_component} heartbeat! "
+                                      f"Received {received_hb} total.")
+                    # Check whether we are connecting to ardupilot or PX4 and change dialect accordingly
+                    if self.dialect is None:
+                        match m.autopilot:
+                            case 3:
+                                self.drone_autopilot = "ArduPilot"
+                                self.dialect = "ardupilotmega"
+                            case 12:
+                                self.drone_autopilot = "PX4"
+                                self.dialect = "cubepilot"
+                        self.logger.debug(f"Identified drone as {self.drone_autopilot}")
+            await asyncio.sleep(0.5)
+
     def connected_to_drone(self):
         if time.time_ns() - self.time_of_last_drone < self.disconnected_thresh:
             return True
@@ -156,8 +168,25 @@ class MAVPassthrough:
         else:
             return False
 
+    def send_as_gcs(self, msg):
+        try:
+            self.con_drone_in.mav.srcSystem = self.gcs_system
+            self.con_drone_in.mav.srcComponent = self.gcs_component
+            self.con_drone_in.mav.send(msg)
+            self.logger.debug(f"Sent Message as GCS {msg.get_srcSystem(), msg.get_srcComponent()}: {msg.to_dict()}")
+            self.con_drone_in.mav.srcSystem = self.source_system
+            self.con_drone_in.mav.srcComponent = self.source_component
+        except Exception as e:
+            self.logger.debug(repr(e), exc_info=True)
+
+    def send_cmd_long(self, target_system, target_component, cmd, param1=math.nan, param2=math.nan, param3=math.nan,
+                      param4=math.nan, param5=math.nan, param6=math.nan, param7=math.nan):
+        msg = self.con_drone_in.mav.command_long_encode(target_system, target_component, cmd, 0,
+                                                        param1, param2, param3, param4, param5, param6, param7)
+        self.send_as_gcs(msg)
+
     def _process_message_for_return(self, msg):
-        msg_id = msg._header.msgId  # msg.id is sometimes not set correctly.
+        msg_id = msg.get_msgId()  # msg.id is sometimes not set correctly.
         if msg_id == -1:
             self.logger.debug(f"Message with BAD_DATA id, can't resend: {msg_id}, {msg.to_dict()}")
             return False
@@ -182,7 +211,8 @@ class MAVPassthrough:
                         await asyncio.sleep(0.0001)
                     else:
                         if self.log_messages:
-                            self.logger.debug(f"Message from GCS, {msg.to_dict()}")
+                            self.logger.debug(f"Message from GCS {msg.get_srcSystem(), msg.get_srcComponent()}, "
+                                              f"{msg.to_dict()}")
                         self.time_of_last_gcs = time.time_ns()
                         if self.con_drone_in is not None and self.connected_to_gcs():  # Send onward to the drone
                             self.con_drone_in.mav.srcSystem = msg.get_srcSystem()
@@ -193,8 +223,8 @@ class MAVPassthrough:
                                 except Exception as e:
                                     self.logger.debug(f"Encountered an exception sending message to drone: "
                                                       f"{repr(e)}", exc_info=True)
-                        self.con_gcs.mav.srcSystem = self.source_system
-                        self.con_gcs.mav.srcComponent = self.source_component
+                            self.con_drone_in.mav.srcSystem = self.source_system
+                            self.con_drone_in.mav.srcComponent = self.source_component
             else:
                 await asyncio.sleep(1)
 
@@ -209,7 +239,8 @@ class MAVPassthrough:
                         await asyncio.sleep(0.0001)
                     else:
                         if self.log_messages:
-                            self.logger.debug(f"Message from Drone, {msg.to_dict()}")
+                            self.logger.debug(f"Message from Drone {msg.get_srcSystem(), msg.get_srcComponent()}, "
+                                              f"{msg.to_dict()}")
                         self.time_of_last_drone = time.time_ns()
                         if self.con_gcs is not None and self.connected_to_drone():
                             self.con_gcs.mav.srcSystem = msg.get_srcSystem()
