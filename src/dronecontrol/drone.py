@@ -21,7 +21,8 @@ from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, A
 from mavsdk.manual_control import ManualControlError
 from mavsdk.camera import CameraError
 
-from dronecontrol.utils import dist_ned, dist_gps, relative_gps, parse_address, common_formatter, get_free_port
+from dronecontrol.utils import dist_ned, dist_gps, relative_gps, heading_ned, heading_gps
+from dronecontrol.utils import parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
 
 import logging
@@ -267,9 +268,8 @@ class Drone(ABC, threading.Thread):
             return True
         return False
 
-    def is_at_gps(self, target_lat, target_long, target_amsl, tolerance=0.25) -> bool:
-        cur_lat, cur_long, cur_asml, cur_atl = self.position_global
-        if dist_gps(target_lat, target_long, target_amsl, cur_lat, cur_long, cur_asml) < tolerance:
+    def is_at_gps(self, target_gps, tolerance=0.25) -> bool:
+        if dist_gps(target_gps, self.position_global[:3]) < tolerance:
             return True
         return False
 
@@ -901,13 +901,15 @@ class DroneMAVSDK(Drone):
             if not self.trajectory_generator.CAN_DO_GPS or not self.trajectory_follower.CAN_DO_GPS:
                 raise RuntimeError("Trajectory generator can't use GPS coordinates!")
             self.trajectory_generator.use_gps = True
+            target = np.asarray([lat, long, amsl])
             self.trajectory_generator.set_target(Waypoint(WayPointType.POS_GLOBAL,
-                                                          gps=np.asarray([lat, long, amsl]),
+                                                          gps=target,
                                                           yaw=yaw))
         else:
             self.trajectory_generator.use_gps = False
+            target = np.asarray([x, y, z])
             self.trajectory_generator.set_target(Waypoint(WayPointType.POS_NED,
-                                                          pos=np.asarray([x, y, z]),
+                                                          pos=target,
                                                           yaw=yaw))
 
         self.logger.debug("Creating trajectory...")
@@ -919,10 +921,10 @@ class DroneMAVSDK(Drone):
         while True:
             # Check if we have arrived at target waypoint
             if use_gps:
-                reached = (self.is_at_gps(lat, long, amsl, tolerance=tolerance)
+                reached = (self.is_at_gps(target, tolerance=tolerance)
                            and self.is_at_heading(yaw, tolerance=1))
             else:
-                reached = self.is_at_pos([x, y, z], tolerance=tolerance) and self.is_at_heading(yaw, tolerance=1)
+                reached = self.is_at_pos(target, tolerance=tolerance) and self.is_at_heading(yaw, tolerance=1)
 
             # Print message and stop if we have reached waypoint
             if reached:
@@ -1094,8 +1096,6 @@ class DroneMAVSDK(Drone):
 
 
 class Waypoint:
-    # TODO: All of it
-    # TODO: Functions for: distance between two points, heading between two points, GPS offset by x, y, z, etc.
     def __init__(self, waypoint_type: WayPointType,
                  pos: np.ndarray | None = None,
                  vel: np.ndarray | None = None,
@@ -1140,6 +1140,20 @@ class Waypoint:
     @property
     def yaw(self):
         return self._array[-1]
+
+    def distance(self, other: "Waypoint"):
+        return dist_ned(self.pos, other.pos)
+
+    def heading_ned(self, other: "Waypoint"):
+        return heading_ned(self.pos, other.pos)
+
+    def heading_gps(self, other: "Waypoint"):
+        return heading_gps(self.gps, other.gps)
+
+    def offset_gps(self, north: float, east: float, up: float) -> "Waypoint":
+        """Returns a new waypoint, offset by north, east and up from this waypoint. Note that the yaw is kept."""
+        new_gps = relative_gps(north, east, up, *self.gps)
+        return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
 
 
 Setpoint = Waypoint
@@ -1221,8 +1235,6 @@ class TrajectoryFollower(ABC):
     CAN_DO_GPS = False
     SETPOINT_TYPES = set()
     WAYPOINT_TYPES = set()
-
-    # TODO: Some kind of "reached" function for when we have reached a waypoint
 
     def __init__(self, drone: Drone, logger, dt, setpoint_type: SetPointType):
         assert setpoint_type in self.SETPOINT_TYPES, (f"Invalid setpoint type {setpoint_type} "
@@ -1361,7 +1373,9 @@ class VelocityControlFollower(TrajectoryFollower):
         self.logger.debug(f"Initialized trajectory follower {self.__class__.__name__}:\n   {attr_string}")
 
     def get_next_waypoint(self) -> bool:
-        return self.current_waypoint is None or self.drone.is_at_pos(self.current_waypoint.pos) and self.drone.is_at_heading(self.current_waypoint.yaw)
+        return (self.current_waypoint is None or
+                self.drone.is_at_pos(self.current_waypoint.pos)
+                and self.drone.is_at_heading(self.current_waypoint.yaw))
 
     async def set_setpoint(self, waypoint):
         """ Always move towards target. Accelerates if we are slower than the max speed and have space to accelerate,
@@ -1375,8 +1389,7 @@ class VelocityControlFollower(TrajectoryFollower):
         if self.drone.is_at_pos(waypoint.pos, tolerance=1):
             temp_yaw_target = target_yaw
         else:
-            temp_yaw_target = math.atan2(waypoint.pos[1] - self.drone.position_ned[1],
-                                         waypoint.pos[0] - self.drone.position_ned[0]) / math.pi * 180
+            temp_yaw_target = heading_ned(self.drone.position_ned, waypoint.pos)
         cur_yaw = self.drone.attitude[2]
         dif_yaw = (temp_yaw_target - cur_yaw + 180) % 360 - 180
         step_size = self.max_yaw_rate * self.dt * self.fudge_yaw

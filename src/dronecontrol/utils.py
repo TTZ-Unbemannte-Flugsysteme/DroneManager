@@ -6,7 +6,7 @@ import socket
 import inspect
 import typing
 import types
-from haversine import inverse_haversine, haversine, Direction, Unit
+from haversine import inverse_haversine, haversine, Direction, Unit, haversine_vector
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -15,10 +15,30 @@ def dist_ned(pos1, pos2):
     return np.sqrt(np.sum((pos1 - pos2) ** 2, axis=0))
 
 
-def dist_gps(lat1, long1, alt1, lat2, long2, alt2):
-    dist_horiz = haversine((lat1, long1), (lat2, long2), unit=Unit.METERS)
-    dist_alt = alt1 - alt2
+def dist_gps(gps1, gps2):
+    dist_horiz = haversine((gps1[0], gps1[1]), (gps2[0], gps2[1]), unit=Unit.METERS)
+    dist_alt = gps1[2] - gps2[2]
     return math.sqrt(dist_horiz*dist_horiz + dist_alt*dist_alt)
+
+
+def heading_ned(pos1, pos2):
+    """ Heading from pos1 to pos2, going from -180 to +180 with 0 straight north.
+
+    pos1 and pos2 must be NED arrays."""
+    return math.atan2(pos2[1] - pos1[1], pos2[0] - pos1[0]) / math.pi * 180
+
+
+def heading_gps(gps1, gps2):
+    """ Heading between GPS coordinates, going from -180 to +180 with 0 straight north.
+
+    Note that the GPS coordinates include an altitude, which is ignored in this function
+    """
+    diff_long_rad = (gps2[1] - gps1[1]) * math.pi / 180
+    lat1_rad = gps1[0] * math.pi / 180
+    lat2_rad = gps2[0] * math.pi / 180
+    x = math.sin(diff_long_rad) * math.cos(lat2_rad)
+    y = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(diff_long_rad)
+    return math.atan2(x, y) * 180 / math.pi
 
 
 def relative_gps(north, east, up, lat, long, alt):
