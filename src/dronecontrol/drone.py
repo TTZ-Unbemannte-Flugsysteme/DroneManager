@@ -33,9 +33,9 @@ os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 
-# TODO: Refactor all drone moving functions to use TrajectoryFollowers in some fashion
 # TODO: Separate activate/deactivate for follower algorithm, currently can only be activated by move/flyto and cannot be deactivated at all.
 # TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor
+# TODO: Add possibility for fly_to or other "do at" commands to accept waypoints
 
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType

@@ -344,15 +344,17 @@ class CommandScreen(Screen):
                     if is_invalid:
                         raise RuntimeError(f"CLI command {command_name} has invalid parameter types for parameter {name}!")
                     if is_list and is_required:
-                        tmp_parser.add_argument(arg_name, type=base_type, required=is_required, nargs="+")
+                        tmp_parser.add_argument(arg_name, type=base_type, nargs="+")
                     elif is_list and not is_required:
                         tmp_parser.add_argument(arg_name, type=base_type, nargs="*")
                     else:
                         tmp_parser.add_argument(arg_name, type=base_type)
+                    self.logger.debug(f"Added Argument {arg_name}: {base_type, is_list, is_required}")
                 self.dynamic_commands[cli_command] = command
         except Exception as e:
             self.logger.warning("Failed to load CLI commands for the plugin!")
             self.logger.debug(repr(e), exc_info=True)
+            return e
 
     async def _unload_plugin_commands(self, plugin_name, plugin):
         # TODO: ALL OF IT

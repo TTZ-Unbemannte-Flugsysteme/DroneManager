@@ -10,9 +10,12 @@ from dronecontrol.utils import common_formatter, get_free_port
 import logging
 
 from dronecontrol.gimbal import GimbalPlugin
+from dronecontrol.formations import FormationsPlugin
 
+# TODO: Plugin Discovery
 PLUGINS = {
     "gimbal": GimbalPlugin,
+    "formations": FormationsPlugin,
 }
 
 
@@ -33,6 +36,8 @@ class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
+    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
+    #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
 
     def __init__(self, drone_class, logger=None):
         self.drone_class = drone_class
@@ -348,8 +353,10 @@ class DroneManager:
         await plugin.start()
         self.logger.debug(f"Performing callbacks for plugin loading...")
         for func in self._on_plugin_load_coros:
-            self.running_tasks.add(asyncio.create_task(func(plugin_name, plugin)))
-        self.logger.info(f"Plugin {plugin_name} fully loaded!")
+            res = await asyncio.create_task(func(plugin_name, plugin))
+            if isinstance(res, Exception):
+                self.logger.warning("Couldn't load a callback plugin.")
+        self.logger.info(f"Completed loading Plugin {plugin_name}!")
 
     async def unload_plugin(self, plugin_name):
         if plugin_name not in self.plugins:
