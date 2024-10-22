@@ -550,6 +550,7 @@ class DroneApp(App):
     BINDINGS = {
         Binding("s", "cycle_control", "Swap Status/Control"),
     }
+    TITLE = "DroneManager"
 
     def __init__(self, dm: DroneManager, logger=None):
         self.drone_manager = dm
