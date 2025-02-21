@@ -34,7 +34,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 
 # TODO: Separate activate/deactivate for follower algorithm, currently can only be activated by move/flyto and cannot be deactivated at all.
-# TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor
+# TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor any issues nicely
 # TODO: Add possibility for fly_to or other "do at" commands to accept waypoints
 
 FlightMode = MAVSDKFlightMode
@@ -89,6 +89,7 @@ class Drone(ABC, threading.Thread):
 
         self.position_update_rate: float = 10
         self.trajectory_generator: TrajectoryGenerator | None = None
+        self.trajectory_follower: TrajectoryFollower | None = None
 
         self.is_paused = False
         self.mav_conn: MAVPassthrough | None = None
@@ -153,7 +154,7 @@ class Drone(ABC, threading.Thread):
         self.logger.debug("Pausing...")
 
     def resume(self):
-        """ Resume the current task. """
+        """ Resume executing tasks. """
         self.is_paused = False
         self.logger.debug("Resuming...")
 
@@ -991,7 +992,7 @@ class DroneMAVSDK(Drone):
             cur_alt = self.position_ned[2]
             ema_alt_error = (cur_alt - old_alt) + 0.33 * ema_alt_error
             if ema_alt_error < error_thresh and time.time() > start_time + min_time:
-                break
+                going_down = False
             old_alt = cur_alt
             target_pos[2] = cur_alt + 0.5
             await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=target_pos[:3], yaw=target_pos[3]))
@@ -1313,7 +1314,7 @@ class TrajectoryFollower(ABC):
 
     @abstractmethod
     async def set_setpoint(self, waypoint):
-        """ Function that determines the setpoints required to get to the target waypoint. This function is called
+        """ Function that determines the next setpoint required to get to the target waypoint. This function is called
         once every dt seconds using either the next waypoint from the trajectory generator or the drones current
         position.
 
