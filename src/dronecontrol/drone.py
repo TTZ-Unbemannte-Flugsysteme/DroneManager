@@ -42,7 +42,6 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType
 
-
 class Battery:
     def __init__(self):
         self.id = None
@@ -282,7 +281,7 @@ class Drone(ABC, threading.Thread):
     async def spin_at_rate(self, yaw_rate, duration, direction="cw") -> bool:
         pass
 
-    def check_waypoint(self, waypoint):
+    def check_waypoint(self, waypoint: "Waypoint"):
         """ Check if a waypoint is valid and within any geofence (if such a fence is set)"""
         try:
             waypoint_valid = not self.fence or (self.fence and self.fence.check_waypoint_compatible(waypoint))
@@ -915,7 +914,7 @@ class DroneMAVSDK(Drone):
         if put_into_offboard and self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
 
-        #Determine target waypoint and send it to trajectory generator
+        # Determine target waypoint and send it to trajectory generator
         target_waypoint = None
         if use_gps:
             if not self.trajectory_generator.CAN_DO_GPS or not self.trajectory_follower.CAN_DO_GPS:
@@ -930,7 +929,7 @@ class DroneMAVSDK(Drone):
         if self.check_waypoint(target_waypoint):
             self.trajectory_generator.set_target(target_waypoint)
         else:
-            self.logger.warning("Can't fly to target position due to conflict with area fence")
+            self.logger.warning("Can't fly to target position due to conflict with area fence!")
             return False
 
         # Create trajectory and activate follower algorithm if not already active
@@ -1463,6 +1462,10 @@ class VelocityControlFollower(TrajectoryFollower):
         await self.drone.set_setpoint(vel_yaw_setpoint)
 
 
+##################################################################################################
+# Fences #########################################################################################
+##################################################################################################
+
 class Fence(ABC):
     """ Abstract base class for geo-fence type classes and methods.
 
@@ -1472,6 +1475,10 @@ class Fence(ABC):
 
     @abstractmethod
     def check_waypoint_compatible(self, point: Waypoint) -> bool:
+        """ Should return True if the waypoint fits within the fence, and false otherwise.
+
+        "Fits within" is taken broadly here, a fence can be inclusive, exclusive, around a dynamic obstacle, or
+         anything else. As long as True is returned when the waypoint is "good" and False otherwise, it works."""
         pass
 
 

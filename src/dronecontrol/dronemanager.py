@@ -4,7 +4,7 @@ import os
 import socket
 from asyncio.exceptions import TimeoutError, CancelledError
 
-from dronecontrol.drone import Drone, parse_address
+from dronecontrol.drone import Drone, parse_address, RectLocalFence
 from dronecontrol.utils import common_formatter, get_free_port
 
 import logging
@@ -17,6 +17,13 @@ PLUGINS = {
     "gimbal": GimbalPlugin,
     "formations": FormationsPlugin,
 }
+
+# TODO: Fence class discovery
+FENCES = {
+    "localrect": RectLocalFence,
+}
+
+# TODO: Trajectory generator/follower discovery and setting/unsetting functions
 
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
