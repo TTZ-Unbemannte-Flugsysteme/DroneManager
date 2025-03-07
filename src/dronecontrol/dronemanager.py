@@ -10,12 +10,12 @@ from dronecontrol.utils import common_formatter, get_free_port
 import logging
 
 from dronecontrol.gimbal import GimbalPlugin
-from dronecontrol.formations import FormationsPlugin
+#from dronecontrol.formations import FormationsPlugin
 
 # TODO: Plugin Discovery
 PLUGINS = {
     "gimbal": GimbalPlugin,
-    "formations": FormationsPlugin,
+    #"formations": FormationsPlugin,
 }
 
 # TODO: Fence class discovery
@@ -42,13 +42,10 @@ DRONE_DICT = {
 class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Handle MAVSDK crashes, in particular the grpc failure, somehow
-    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
-    #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
 
     def __init__(self, drone_class, logger=None):
         self.drone_class = drone_class
         self.drones: dict[str, Drone] = {}
-        self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self.drone_lock = asyncio.Lock()
@@ -220,9 +217,9 @@ class DroneManager:
         return await self._multiple_drone_action(self.drone_class.disarm, names,
                                                  "Disarming drone(s) {}.", schedule=schedule)
 
-    async def takeoff(self, names, schedule=False):
+    async def takeoff(self, names, altitude=2.0, schedule=False):
         return await self._multiple_drone_action(self.drone_class.takeoff, names,
-                                                 "Takeoff for Drone(s) {}.", schedule=schedule)
+                                                 "Takeoff for Drone(s) {}.", altitude, schedule=schedule)
 
     async def change_flightmode(self, names, flightmode, schedule=False):
         await self._multiple_drone_action(self.drone_class.change_flight_mode,
@@ -235,6 +232,7 @@ class DroneManager:
                                           "Landing drone(s) {}.", schedule=schedule)
 
     def set_fence(self, names, n_lower, n_upper, e_lower, e_upper, height):
+        """ Set a fence on a drone"""
         try:
             for name in names:
                 try:
@@ -356,7 +354,7 @@ class DroneManager:
         self._on_drone_connect_coros.add(func)
 
     async def load_plugin(self, plugin_name):
-        # Create plugin instance, add plugin commands (how???)
+        # TODO: Check to prevent collision between plugin name and existing attributes.
         if plugin_name in self.plugins:
             self.logger.warning(f"Plugin {plugin_name} already loaded!")
             return False

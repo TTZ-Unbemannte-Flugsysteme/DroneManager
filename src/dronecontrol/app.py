@@ -18,6 +18,9 @@ from dronecontrol.widgets import InputWithHistory, TextualLogHandler, DroneOverv
 
 import logging
 
+# TODO: Need some kind of "awaiter" process, that awaits each of the CLI tasks. Can't do that in the CLI function, as it
+# will block the UI. Create an extra tasks that awaits the CLI tasks? Who awaits the awaiter tasks?
+# TODO: Fence, trajectory generator and trajectory follower managing somehow
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -32,9 +35,10 @@ DRONE_DICT = {
     "kira":   "serial://COM5:460800",
 }
 
-UPDATE_RATE = 20  # How often the various screens update in Hz
+UPDATE_RATE = 20  # How often the various screens update in Hz. TODO: Currently time delay after function, refactor to
+# ensure actual 20hz refresh rate
 
-DEFAULT_PLUGINS = ["gimbal"]
+DEFAULT_PLUGINS = [] #["gimbal"]
 
 
 class StatusScreen(Screen):
@@ -208,6 +212,8 @@ class CommandScreen(Screen):
 
         takeoff_parser = command_parsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
+        takeoff_parser.add_argument("altitude", type=float, nargs="?", default=2.0,
+                                    help="Takeoff altitude, default 2m")
         takeoff_parser.add_argument("-s", "--schedule", action="store_true",
                                     help="Queue this action instead of executing immediately.")
 
@@ -359,7 +365,7 @@ class CommandScreen(Screen):
     async def _unload_plugin_commands(self, plugin_name, plugin):
         # TODO: ALL OF IT
         # TODO: Apparently there isn't a great way to get rid of arguments in argparse, might have to delete the parser
-        # and generate a new one (which should be possible due to plugin list)
+        #  and generate a new one (which should be possible due to plugin list)
         pass
 
     async def _add_drone_object(self, name, drone):
@@ -413,7 +419,7 @@ class CommandScreen(Screen):
             elif args.command == "disarm":
                 tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
             elif args.command == "takeoff":
-                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.takeoff(args.drones, altitude=args.altitude, schedule=args.schedule))
             elif args.command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
             elif args.command == "flyto":
@@ -453,7 +459,7 @@ class CommandScreen(Screen):
                                             if item not in self.dm.currently_loaded_plugins()]
                 self.logger.info(f"Available plugins to load: {available_but_not_loaded}")
             elif args.command == "exit":
-                tmp = asyncio.create_task(self.exit())
+                exit_task = asyncio.create_task(self.exit())
             elif args.command in self.dynamic_commands:
                 self.logger.debug(f"Performing plugin action {args.command}")
                 func_arguments = vars(args).copy()
@@ -488,7 +494,7 @@ class CommandScreen(Screen):
         if stop_app:
             self.logger.info("All drones stopped, exiting...")
             await asyncio.sleep(2)  # Beauty pause
-            self.app.exit()
+            await self.exit()
 
     async def exit(self):
         """ Checks if any drones are armed and exits the app if not."""
@@ -499,6 +505,9 @@ class CommandScreen(Screen):
                     stop_app = False
             if stop_app:
                 await asyncio.gather(*[self.dm.drones[name].disconnect() for name in self.dm.drones])
+                for task in self.running_tasks:
+                    if isinstance(task, asyncio.Task):
+                        task.cancel()
                 self.logger.info("Exiting...")
                 await asyncio.sleep(2)  # Beauty pause
                 self.app.exit()
