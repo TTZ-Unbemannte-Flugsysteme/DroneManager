@@ -38,6 +38,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 # TODO: Add possibility for fly_to or other "do at" commands to accept waypoints
 
 # TODO: Set Fence functions here, in DM and app
+# TODO: Allow multiple fences
 
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType
