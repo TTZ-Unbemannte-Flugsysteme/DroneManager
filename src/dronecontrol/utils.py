@@ -6,7 +6,7 @@ import socket
 import inspect
 import typing
 import types
-from haversine import inverse_haversine, haversine, Direction, Unit, haversine_vector
+from haversine import inverse_haversine, haversine, Direction, Unit
 
 common_formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -48,6 +48,16 @@ def relative_gps(north, east, up, lat, long, alt):
     coords = inverse_haversine(coords, north, Direction.NORTH, unit=Unit.METERS)
     target_lat, target_long = inverse_haversine(coords, east, Direction.EAST, unit=Unit.METERS)
     return target_lat, target_long, target_alt
+
+
+def offset_from_gps(origin, gps1, gps2):
+    """ Given two GPS points, computes a heading and distance between the first two and then creates a new point
+    separated fom the origin by the same heading and distance"""
+    dist_horiz = haversine((gps1[0], gps1[1]), (gps2[0], gps2[1]), unit=Unit.METERS)
+    dist_alt = gps2[2] - gps1[2]
+    heading = heading_gps(gps1, gps2)
+    lat, long = inverse_haversine(origin[:2], dist_horiz, heading, unit=Unit.METERS)
+    return [lat, long, origin[2] + dist_alt]
 
 
 def get_free_port():

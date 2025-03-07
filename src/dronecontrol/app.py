@@ -32,9 +32,10 @@ DRONE_DICT = {
     "kira":   "serial://COM5:460800",
 }
 
-UPDATE_RATE = 20  # How often the various screens update in Hz
+UPDATE_RATE = 20  # How often the various screens update in Hz. TODO: Currently time delay after function, refactor to
+# ensure actual 20hz refresh rate
 
-DEFAULT_PLUGINS = ["gimbal"]
+DEFAULT_PLUGINS = [] #["gimbal"]
 
 
 class StatusScreen(Screen):
@@ -359,7 +360,7 @@ class CommandScreen(Screen):
     async def _unload_plugin_commands(self, plugin_name, plugin):
         # TODO: ALL OF IT
         # TODO: Apparently there isn't a great way to get rid of arguments in argparse, might have to delete the parser
-        # and generate a new one (which should be possible due to plugin list)
+        #  and generate a new one (which should be possible due to plugin list)
         pass
 
     async def _add_drone_object(self, name, drone):

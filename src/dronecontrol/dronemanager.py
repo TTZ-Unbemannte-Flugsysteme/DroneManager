@@ -10,12 +10,12 @@ from dronecontrol.utils import common_formatter, get_free_port
 import logging
 
 from dronecontrol.gimbal import GimbalPlugin
-from dronecontrol.formations import FormationsPlugin
+#from dronecontrol.formations import FormationsPlugin
 
 # TODO: Plugin Discovery
 PLUGINS = {
     "gimbal": GimbalPlugin,
-    "formations": FormationsPlugin,
+    #"formations": FormationsPlugin,
 }
 
 # TODO: Fence class discovery
@@ -220,9 +220,9 @@ class DroneManager:
         return await self._multiple_drone_action(self.drone_class.disarm, names,
                                                  "Disarming drone(s) {}.", schedule=schedule)
 
-    async def takeoff(self, names, schedule=False):
+    async def takeoff(self, names, altitude=2.0, schedule=False):
         return await self._multiple_drone_action(self.drone_class.takeoff, names,
-                                                 "Takeoff for Drone(s) {}.", schedule=schedule)
+                                                 "Takeoff for Drone(s) {}.", altitude, schedule=schedule)
 
     async def change_flightmode(self, names, flightmode, schedule=False):
         await self._multiple_drone_action(self.drone_class.change_flight_mode,
@@ -356,7 +356,7 @@ class DroneManager:
         self._on_drone_connect_coros.add(func)
 
     async def load_plugin(self, plugin_name):
-        # Create plugin instance, add plugin commands (how???)
+        # TODO: Check to prevent collision between plugin name and existing attributes.
         if plugin_name in self.plugins:
             self.logger.warning(f"Plugin {plugin_name} already loaded!")
             return False

@@ -21,7 +21,7 @@ from mavsdk.offboard import PositionNedYaw, PositionGlobalYaw, VelocityNedYaw, A
 from mavsdk.manual_control import ManualControlError
 from mavsdk.camera import CameraError
 
-from dronecontrol.utils import dist_ned, dist_gps, relative_gps, heading_ned, heading_gps
+from dronecontrol.utils import dist_ned, dist_gps, relative_gps, heading_ned, heading_gps, offset_from_gps
 from dronecontrol.utils import parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
 
@@ -236,10 +236,10 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def takeoff(self, altitude=-2.0) -> bool:
-        """ Takes off to the specified altitude.
+    async def takeoff(self, altitude=2.0) -> bool:
+        """ Takes off to the specified altitude above current position.
 
-        Note that negative for up, i.e. the altitude should be -2 to take off to 2m above ground.
+        Note that altitude is positive.
 
         :param altitude: Takeoff altitude above.
         :return:
@@ -666,10 +666,8 @@ class DroneMAVSDK(Drone):
         if not self.is_armed:
             raise RuntimeError("Can't take off without being armed!")
 
-    async def takeoff(self, altitude=-2.0) -> bool:
+    async def takeoff(self, altitude=2.0) -> bool:
         """
-
-        Note that altitude is negative for  up.
 
         :param altitude:
         :return:
@@ -684,7 +682,7 @@ class DroneMAVSDK(Drone):
         pos_yaw[3] = self.attitude[2]
         return pos_yaw
 
-    async def _takeoff_using_takeoffmode(self, altitude=-2.5):
+    async def _takeoff_using_takeoffmode(self, altitude=2.0):
         """
 
         :param altitude: Currently ignored.
@@ -704,12 +702,18 @@ class DroneMAVSDK(Drone):
         self.logger.info("Completed takeoff!")
         return True
 
-    async def _takeoff_using_offboard(self, altitude=-2.5, tolerance=0.25):
-        self.logger.info(f"Trying to take off to {-altitude}m in offboard mode...")
+    async def _takeoff_using_offboard(self, altitude=2.0, tolerance=0.25):
+        """
+
+        :param altitude:
+        :param tolerance:
+        :return:
+        """
+        self.logger.info(f"Trying to take off to {altitude}m in offboard mode...")
         await super().takeoff(altitude=altitude)
         self._can_takeoff()
         target_pos_yaw = self._get_pos_ned_yaw()
-        target_pos_yaw[2] = target_pos_yaw[2] + altitude
+        target_pos_yaw[2] = target_pos_yaw[2] - altitude
         await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=target_pos_yaw[:3], yaw=target_pos_yaw[3]))
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
@@ -1181,9 +1185,15 @@ class Waypoint:
     def heading_gps(self, other: "Waypoint"):
         return heading_gps(self.gps, other.gps)
 
-    def offset_gps(self, north: float, east: float, up: float) -> "Waypoint":
+    def shift_gps(self, north: float, east: float, up: float) -> "Waypoint":
         """Returns a new waypoint, offset by north, east and up from this waypoint. Note that the yaw is kept."""
         new_gps = relative_gps(north, east, up, *self.gps)
+        return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
+
+    def offset_gps(self, initial: "Waypoint", target: "Waypoint"):
+        """ Creates a vector between the initial and target waypoint and then creates a new Waypoint offset from this
+        one by the same distance and heading."""
+        new_gps = offset_from_gps(self.gps, initial.gps, target.gps)
         return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
 
 
@@ -1192,6 +1202,7 @@ class Waypoint:
 ##################################################################################################
 
 class TrajectoryGenerator(ABC):
+    """ Abstract base class for trajectory generators."""
 
     CAN_DO_GPS = False
     WAYPOINT_TYPES = set()
