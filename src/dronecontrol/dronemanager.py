@@ -24,6 +24,7 @@ FENCES = {
 }
 
 # TODO: Trajectory generator/follower discovery and setting/unsetting functions, trajectory follower deactivation
+# TODO: Optional console logging handler to avoid issues when not using the CLI
 
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
@@ -190,6 +191,9 @@ class DroneManager:
             self.logger.debug(repr(e), exc_info=True)
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
+        # Convenience check to avoid isues when using multiple drone functions with only a single drone.
+        if isinstance(names, str):
+            names = [names]
         try:
             coros = [action(self.drones[name], *args, **kwargs) for name in names]
             if schedule:
@@ -232,11 +236,14 @@ class DroneManager:
                                           "Landing drone(s) {}.", schedule=schedule)
 
     def set_fence(self, names, n_lower, n_upper, e_lower, e_upper, height):
-        """ Set a fence on a drone"""
+        """ Set a fence on drones"""
+        if isinstance(names, str):
+            names = [names]
         try:
             for name in names:
                 try:
                     self.drones[name].set_fence(RectLocalFence, n_lower, n_upper, e_lower, e_upper, height)
+                    self.logger.info(f"Set fence {self.drones[name].fence} on {name}")
                 except KeyError:
                     self.logger.warning(f"No drone named {name}!")
         except Exception as e:

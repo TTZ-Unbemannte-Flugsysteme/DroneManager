@@ -212,7 +212,7 @@ class CommandScreen(Screen):
 
         takeoff_parser = command_parsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
-        takeoff_parser.add_argument("altitude", type=float, nargs="?", default=2.0,
+        takeoff_parser.add_argument("-a", "--altitude", type=float, nargs="?", default=2.0,
                                     help="Takeoff altitude, default 2m")
         takeoff_parser.add_argument("-s", "--schedule", action="store_true",
                                     help="Queue this action instead of executing immediately.")
@@ -224,6 +224,14 @@ class CommandScreen(Screen):
                                         help="Drone(s) to change flight mode on.")
         flight_mode_parser.add_argument("-s", "--schedule", action="store_true",
                                         help="Queue this action instead of executing immediately.")
+
+        fence_parser = command_parsers.add_parser("fence", help="Set a geofence-type thing. VERY WIP")
+        fence_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to set the fence on.")
+        fence_parser.add_argument("nl", type=float, help="Lower area limit along 'North' axis")
+        fence_parser.add_argument("nu", type=float, help="Upper area limit along 'North' axis")
+        fence_parser.add_argument("el", type=float, help="Lower area limit along 'East' axis")
+        fence_parser.add_argument("eu", type=float, help="Upper area limit along 'East' axis")
+        fence_parser.add_argument("h", type=float, help="Height limit, upper only. Positive for up.")
 
         fly_to_parser = command_parsers.add_parser("flyto", help="Send the drone to a local coordinate.")
         fly_to_parser.add_argument("drone", type=str, help="Name of the drone")
@@ -422,6 +430,8 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.dm.takeoff(args.drones, altitude=args.altitude, schedule=args.schedule))
             elif args.command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
+            elif args.command == "fence":
+                self.dm.set_fence(args.drones, args.nl, args.nu, args.el, args.eu, args.h)
             elif args.command == "flyto":
                 tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
                                                          tol=args.tolerance, schedule=args.schedule))

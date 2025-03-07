@@ -8,6 +8,7 @@ import threading
 import platform
 import time
 from subprocess import Popen, DEVNULL
+from concurrent.futures import ProcessPoolExecutor
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -24,6 +25,7 @@ from mavsdk.camera import CameraError
 from dronecontrol.utils import dist_ned, dist_gps, relative_gps, heading_ned, heading_gps, offset_from_gps
 from dronecontrol.utils import parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
+from dronecontrol.GMP3 import GMP3, GMP3Config
 
 import logging
 
@@ -33,8 +35,10 @@ os.makedirs(logdir, exist_ok=True)
 _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 
 
-# TODO: Separate activate/deactivate for follower algorithm, currently can only be activated by move/flyto and cannot be deactivated at all.
-# TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor any issues nicely
+# TODO: Separate activate/deactivate for follower algorithm, currently can only be activated by move/flyto and cannot
+#  be deactivated at all.
+# TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor any issues
+#  nicely
 # TODO: Add possibility for fly_to or other "do at" commands to accept waypoints
 
 # TODO: Set Fence functions here, in DM and app
@@ -404,9 +408,10 @@ class DroneMAVSDK(Drone):
         # planning algorithms for their time resolution.
         self.position_update_rate = 5
 
-        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
+        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
 
-        self.trajectory_generator = StaticWaypoints(self, self.logger, WayPointType.POS_NED)
+        #self.trajectory_generator = StaticWaypoints(self, self.logger, WayPointType.POS_NED)
+        self.trajectory_generator = GMP3Gen(self, 1/self.position_update_rate, self.logger, use_gps=False)
         self.trajectory_follower = DirectSetpointFollower(self, self.logger, 1/self.position_update_rate,
                                                           WayPointType.POS_VEL_NED)
         #self.trajectory_follower = VelocityControlFollower(self, self.logger, 1/self.position_update_rate)
@@ -728,8 +733,6 @@ class DroneMAVSDK(Drone):
     async def change_flight_mode(self, flightmode: str, timeout: float = 5):
         self.logger.info(f"Changing flight mode to {flightmode}")
         await super().change_flight_mode(flightmode)
-        result = False
-        target_flight_mode = None
         start_time = time.time()
         if flightmode == "hold":
             result = await self._error_wrapper(self.system.action.hold, ActionError)
@@ -924,7 +927,6 @@ class DroneMAVSDK(Drone):
             await self.change_flight_mode("offboard")
 
         # Determine target waypoint and send it to trajectory generator
-        target_waypoint = None
         if use_gps:
             if not self.trajectory_generator.CAN_DO_GPS or not self.trajectory_follower.CAN_DO_GPS:
                 raise RuntimeError("Trajectory generator can't use GPS coordinates!")
@@ -1269,6 +1271,105 @@ class StaticWaypoints(TrajectoryGenerator):
         return self.target_position
 
 
+class GMP3Gen(TrajectoryGenerator):
+
+    # TODO: GMP3 currently doesn't run with less than 2 obstacles
+    # TODO: Altitude and yaw. Both are currently just set immediately when we get a new target
+
+    WAYPOINT_TYPES = {WayPointType.POS_VEL_NED}
+    CAN_DO_GPS = False
+
+    def __init__(self, drone, dt, logger, use_gps=False, ):
+        super().__init__(drone, logger, waypoint_type=WayPointType.POS_VEL_NED, use_gps=use_gps)
+        self.GMP3_PARAMS = {
+            "maxit": 100,
+            "alpha": 0.8,
+            "wdamp": 1,
+            "delta": 0.01,
+            "vx_max": 0.5,
+            "vy_max": 0.5,
+            "Q11": 0.7,
+            "Q22": 0.7,
+            "Q12": 0.01,
+            "dt": dt,
+            "obstacles": [
+                (-3, -1, 0.5),
+                (0, 1, 0.75),
+                (3, 0, 2.0/3.0)
+            ],
+        }
+        self.config = GMP3Config(**self.GMP3_PARAMS)
+        self.gmp3 = GMP3(self.config)
+        self.waypoints = None
+        self.valid_path = False
+        self.start_time = None
+        attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
+        self.logger.debug(f"Initialized trajectory generator {self.__class__.__name__}:\n   {attr_string}")
+
+    async def create_trajectory(self):
+        try:
+            self.logger.info("Calculating path...")
+            cur_x, cur_y, _ = self.drone.position_ned
+            target_x, target_y, _ = self.target_position.pos
+            with ProcessPoolExecutor(max_workers=2) as executor:
+                self.waypoints = await asyncio.get_running_loop().run_in_executor(executor, _calculate_path, cur_x,
+                                                                                  cur_y, target_x, target_y, self.gmp3)
+            valid = True
+            for waypoint in self.waypoints:
+                t, x, y, xdot, ydot = waypoint
+                if not self.drone.check_waypoint(Waypoint(WayPointType.POS_VEL_NED,
+                                                 pos=np.asarray([x, y, self.target_position.pos[2]]),
+                                                 vel=np.asarray([xdot, ydot, 0]),
+                                                 yaw=self.target_position.yaw)):
+                    self.logger.debug(f"Generated waypoint {waypoint} is invalid")
+                    valid = False
+                    break
+            if valid:
+                self.logger.info("Found path!")
+                self.logger.debug(f"Generated {len(self.waypoints)} waypoints: {self.waypoints}")
+                self.start_time = time.time_ns()/1e9
+                self.valid_path = True
+                return True
+            else:
+                self.logger.warning(f"No valid path, generated trajectory violates waypoint constraints "
+                                    f"(probably fence)!")
+                self.valid_path = False
+                return False
+        except Exception as e:
+            self.logger.error("Encountered an exception!")
+            self.logger.debug(repr(e), exc_info=True)
+            self.valid_path = False
+            return False
+
+    def next(self) -> Waypoint | None:
+        if not self.valid_path:
+            return None
+        current_waypoint = None
+        for wp in self.waypoints:
+            if time.time_ns()/1e9 <= self.start_time + wp[0]:
+                current_waypoint = wp
+                break
+        if current_waypoint is None:
+            return None
+        t, x, y, xdot, ydot = current_waypoint
+        waypoint = Waypoint(WayPointType.POS_VEL_NED,
+                            pos=np.asarray([x, y, self.target_position.pos[2]]),
+                            vel=np.asarray([xdot, ydot, 0]),
+                            yaw=self.target_position.yaw)
+        return waypoint
+
+
+def _calculate_path(cur_x, cur_y, target_x, target_y, gmp3):
+    gmp3.calculate((cur_x, cur_y), (target_x, target_y))
+    ts = gmp3.t
+    xs = gmp3.x
+    ys = gmp3.y
+    xdots = gmp3.xdot
+    ydots = gmp3.ydot
+    waypoints = list(zip(ts, xs, ys, xdots, ydots))
+    return waypoints
+
+
 ##################################################################################################
 # Trajectory Followers ###########################################################################
 ##################################################################################################
@@ -1325,6 +1426,7 @@ class TrajectoryFollower(ABC):
         :return:
         """
         # Use current position as dummy waypoint in case trajectory generator can't produce any yet.
+        # TODO: A timer or something so we don't spam the log with "still using current position"
         dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
                                   vel=np.zeros((3,)), yaw=self.drone.attitude[2])
         have_waypoints = False
@@ -1337,16 +1439,19 @@ class TrajectoryFollower(ABC):
                     waypoint = self.drone.trajectory_generator.next()
                     if not waypoint:
                         if not using_current_position:
+                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
                             dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
                                                       yaw=self.drone.attitude[2])
-                        if have_waypoints:
+                        if have_waypoints and not using_current_position:
                             self.logger.debug("Generator no longer producing waypoints, using current position")
                             # If we had waypoints, but lost them, use the current position as a dummy waypoint
                             have_waypoints = False
                             using_current_position = True
-                        else:  # Never had a waypoint
+                        elif not have_waypoints and not using_current_position:  # Never had a waypoint
                             self.logger.debug("Don't have any waypoints from the generator yet, using current position")
                             using_current_position = True
+                        else:
+                            self.logger.debug("Still using current position...")
                         if using_current_position:
                             waypoint = dummy_waypoint
                     else:
@@ -1537,3 +1642,7 @@ class RectLocalFence(Fence):
                     and -coord_down < self.height):
                 return True
         return False
+
+    def __str__(self):
+        return (f"{self.__class__.__name__}, with limits {self.north_lower, self.north_upper}, "
+                f"{self.east_lower, self.east_upper} and {self.height}")
