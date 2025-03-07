@@ -23,7 +23,7 @@ FENCES = {
     "localrect": RectLocalFence,
 }
 
-# TODO: Trajectory generator/follower discovery and setting/unsetting functions
+# TODO: Trajectory generator/follower discovery and setting/unsetting functions, trajectory follower deactivation
 
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
@@ -41,8 +41,7 @@ DRONE_DICT = {
 
 class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
-    # TODO: Better error handling for the multi_action tasks
-    # TODO: Handle MAVSDK crashes
+    # TODO: Handle MAVSDK crashes, in particular the grpc failure, somehow
     # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
     #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
 
@@ -234,6 +233,17 @@ class DroneManager:
     async def land(self, names, schedule=False):
         await self._multiple_drone_action(self.drone_class.land, names,
                                           "Landing drone(s) {}.", schedule=schedule)
+
+    def set_fence(self, names, n_lower, n_upper, e_lower, e_upper, height):
+        try:
+            for name in names:
+                try:
+                    self.drones[name].set_fence(RectLocalFence, n_lower, n_upper, e_lower, e_upper, height)
+                except KeyError:
+                    self.logger.warning(f"No drone named {name}!")
+        except Exception as e:
+            self.logger.error("Couldn't set fence due to an exception")
+            self.logger.debug(repr(e), exc_info=True)
 
     def pause(self, names):
         self.logger.info(f"Pausing drone(s) {names}")

@@ -42,6 +42,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType
 
+
 class Battery:
     def __init__(self):
         self.id = None
@@ -280,6 +281,9 @@ class Drone(ABC, threading.Thread):
     @abstractmethod
     async def spin_at_rate(self, yaw_rate, duration, direction="cw") -> bool:
         pass
+
+    def set_fence(self, fence_type: type["Fence"], *args, **kwargs):
+        self.fence = fence_type(*args, **kwargs)
 
     def check_waypoint(self, waypoint: "Waypoint"):
         """ Check if a waypoint is valid and within any geofence (if such a fence is set)"""
@@ -1260,7 +1264,7 @@ class StaticWaypoints(TrajectoryGenerator):
 class TrajectoryFollower(ABC):
     """ Abstract Base class to "follow" a given trajectory and maintain position at waypoints.
 
-    A trajectory follower can work with different types of waypoints, but must be able to process WayPoinType.POS_NED,
+    A trajectory follower can work with different types of waypoints, but must be able to process WayPointType.POS_NED,
     as that is the default case, used if the trajectory generator fails to produce waypoints for some reason.
     """
 
@@ -1302,10 +1306,17 @@ class TrajectoryFollower(ABC):
         return self._active
 
     async def follow(self):
+        """ Follows waypoints produced from a trajectory generator by sending setpoints to the drone FC.
+
+        Requests a new waypoint from the TG when get_next_waypoint returns True. If the TG does not produce a waypoint,
+        holds position instead.
+        :return:
+        """
         # Use current position as dummy waypoint in case trajectory generator can't produce any yet.
         dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
                                   vel=np.zeros((3,)), yaw=self.drone.attitude[2])
         have_waypoints = False
+        using_current_position = False
         waypoint = dummy_waypoint
         while self.is_active:
             try:
@@ -1313,16 +1324,22 @@ class TrajectoryFollower(ABC):
                     self.logger.debug("Getting new waypoint from trajectory generator...")
                     waypoint = self.drone.trajectory_generator.next()
                     if not waypoint:
+                        if not using_current_position:
+                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
+                                                      yaw=self.drone.attitude[2])
                         if have_waypoints:
                             self.logger.debug("Generator no longer producing waypoints, using current position")
                             # If we had waypoints, but lost them, use the current position as a dummy waypoint
                             have_waypoints = False
+                            using_current_position = True
                         else:  # Never had a waypoint
                             self.logger.debug("Don't have any waypoints from the generator yet, using current position")
-                        waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
-                                            yaw=self.drone.attitude[2])
+                            using_current_position = True
+                        if using_current_position:
+                            waypoint = dummy_waypoint
                     else:
                         have_waypoints = True
+                        using_current_position = False
                     self.current_waypoint = waypoint
                 await self.set_setpoint(waypoint)
                 await asyncio.sleep(self.dt)
@@ -1470,7 +1487,7 @@ class Fence(ABC):
     """ Abstract base class for geo-fence type classes and methods.
 
     """
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         self.active = True
 
     @abstractmethod
