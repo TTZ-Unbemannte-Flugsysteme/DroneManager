@@ -24,7 +24,7 @@ FENCES = {
 }
 
 # TODO: Trajectory generator/follower discovery and setting/unsetting functions, trajectory follower deactivation
-# TODO: Optional console logging handler to avoid issues when not using the CLI
+# TODO: Optional console logging handler to increase usability when not using the textual app
 
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
