@@ -53,11 +53,11 @@ Bar {
 }
 """
 
-    def __init__(self, dm, logger, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = dm
+        self.dm: DroneManager = self.app.dm
         self.cur_drone: Drone | None = None
-        self.logger = logger
+        self.logger = self.app.logger
         asyncio.create_task(self._update_values())
         self.dm.add_connect_func(self._add_drone)
         self.dm.add_remove_func(self._remove_drone)
@@ -80,7 +80,8 @@ Bar {
             except textual.app.NoMatches:
                 pass
             except Exception as e:
-                self.logger.error(f"Error updating values: {repr(e)}", exc_info=True)
+                self.logger.error(f"Error updating values.")
+                self.logger.debug({repr(e)}, exc_info=True)
             await asyncio.sleep(1/UPDATE_RATE)
 
     def compose(self):
@@ -88,10 +89,10 @@ Bar {
             with RadioSet(id="droneselector"):
                 yield RadioButton("None", id="button_no_drone")
             with Vertical():
-                yield Static(id="name", renderable="NAME: NO DRONE SELECTED")
-                yield Static(id="address", renderable="ADDRESS: NO DRONE SELECTED")
+                yield Static(id="name", content="NAME: NO DRONE SELECTED", markup=False)
+                yield Static(id="address", content="ADDRESS: NO DRONE SELECTED", markup=False)
                 yield ProgressBar(id="battery", total=100, show_eta=False)
-                yield Static(id="attitude", renderable="ATTITUDE: NO DRONE SELECTED")
+                yield Static(id="attitude", content="ATTITUDE: NO DRONE SELECTED", markup=False)
         yield Footer()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -149,15 +150,15 @@ class CommandScreen(Screen):
 }
 """
 
-    def __init__(self, dm, logger, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dm: DroneManager = dm
+        self.dm: DroneManager = self.app.dm
         self.drone_widgets: dict[str, Widget] = {}
         self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self._kill_counter = 0  # Require kill all to be entered twice
-        self.logger = logger
+        self.logger = self.app.logger
         self.log_pane_handlers = {}
 
         base_parser, command_parser = self._base_parser()
@@ -393,7 +394,8 @@ class CommandScreen(Screen):
             self.logger.warning(str(e))
             return
         except ArgumentParserError as e:
-            self.logger.error(f"Exception parsing the argument: {repr(e)}", exc_info=True)
+            self.logger.error(f"Exception parsing the argument: ")
+            self.logger.debug(repr(e), exc_info=True)
             return
         try:
             if args.command != "kill" or args.drones:
@@ -474,7 +476,7 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
         except Exception as e:
-            self.logger.error(repr(e))
+            self.logger.error("Encounted an exception executing the CLI!")
             self.logger.debug(repr(e), exc_info=True)
 
     async def action_stop(self, names):
@@ -504,7 +506,7 @@ class CommandScreen(Screen):
                 await asyncio.sleep(2)  # Beauty pause
                 self.app.exit()
         except Exception as e:
-            self.logger.error(f"{repr(e)}", exc_info=True)
+            self.logger.error(repr(e), exc_info=True)
 
     def _schedule_initialization_tasks(self):
         asyncio.create_task(self._logging_setup())
@@ -536,9 +538,9 @@ class CommandScreen(Screen):
                 Log(id="output", classes="text"),
                 Vertical(
                     VerticalScroll(
-                        Static(id="status_header", renderable=status_string),
+                        Static(id="status_header", content=status_string),
                         id="status", classes="text evenvert"),
-                    Static(id="usage", classes="text evenvert", renderable=self.parser.format_help()),
+                    Static(id="usage", classes="text evenvert", content=self.parser.format_help(), markup=False),
                     id="sidebar",
                 )
             ),
@@ -554,9 +556,13 @@ class DroneApp(App):
         Binding("s", "cycle_control", "Swap Status/Control"),
     }
     TITLE = "DroneManager"
+    MODES = {
+        "control": CommandScreen,
+        "status": StatusScreen,
+    }
 
     def __init__(self, dm: DroneManager, logger=None):
-        self.drone_manager = dm
+        self.dm = dm
         if logger is None:
             self.logger = logging.getLogger("App")
             self.logger.setLevel(logging.DEBUG)
@@ -575,15 +581,6 @@ class DroneApp(App):
         super().__init__()
 
     def on_mount(self):
-        screen = CommandScreen(self.drone_manager, self.logger, name="control-screen")
-        self.install_screen(screen, name=screen.name)
-        self.add_mode("control", base_screen=screen)
-        self.command_screen = screen
-        status_screen = StatusScreen(self.drone_manager, self.logger, name="status-screen")
-        self.install_screen(status_screen, name=status_screen.name)
-        self.add_mode("status", base_screen=status_screen)
-        self.status_screen = status_screen
-        self.switch_mode("status")
         self.switch_mode("control")
 
     def action_cycle_control(self):

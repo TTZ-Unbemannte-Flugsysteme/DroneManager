@@ -27,6 +27,9 @@ class ArgParser(argparse.ArgumentParser):
         else:
             raise ArgumentParserError(message)
 
+    def exit(self, status=0, message=None):
+        raise ArgumentParserError(message)
+
 
 class InputWithHistory(Input):
 
