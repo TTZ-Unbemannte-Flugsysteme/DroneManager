@@ -12,6 +12,7 @@ pip install -e .
 
 As part of the installation a command called ```dm``` is installed, which starts the terminal interface. 
 Alternatively you can run the app.py script.
+On windows, you will also have to download the appropriate MAVSDK release (see https://mavsdk.mavlink.io/v2.0/en/cpp/guide/installation.html) and extract the mavsdk-server-bin.exe file into the same directory as drone.py.
 
 ## Usage
 
