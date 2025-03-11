@@ -51,6 +51,9 @@ async def main():
 
 async def battery_swap():
 	# Two drones: luke and tycho. Luke currently observing, tycho landed and waiting
+	dm = DroneManager(DroneMAVSDK)
+	connected = await dm.connect_to_drone("luke", None, None, "udp://:14540", timeout=30)
+	connected = await dm.connect_to_drone("tycho", None, None, "udp://:14541", timeout=30)
 
 	observing_drone = "luke"
 	stand_by_drone = "tycho"
@@ -91,7 +94,7 @@ async def battery_swap():
 			tasks = []
 			tasks.append(asyncio.create_task(dm.land([observing_drone], schedule=True)))
 			tasks.append(asyncio.create_task(dm.disarm([observing_drone], schedule=True)))
-			tasks.append(asycnio.create_task(dm.fly_to(stand_by_drone, *cur_pos_observe)))
+			tasks.append(asyncio.create_task(dm.fly_to(stand_by_drone, *cur_pos_observe)))
 			await asyncio.gather(*tasks)
 
 			# Swap labels for observing and stand-by drone

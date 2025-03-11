@@ -10,11 +10,13 @@ from dronecontrol.utils import common_formatter, get_free_port
 import logging
 
 from dronecontrol.gimbal import GimbalPlugin
+from dronecontrol.scripts import ScriptsPlugin
 #from dronecontrol.formations import FormationsPlugin
 
 # TODO: Plugin Discovery
 PLUGINS = {
     "gimbal": GimbalPlugin,
+    "script": ScriptsPlugin
     #"formations": FormationsPlugin,
 }
 

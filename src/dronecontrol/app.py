@@ -328,6 +328,7 @@ class CommandScreen(Screen):
         rc_stage_parser = command_parsers.add_parser("rc-stage", help="Perform a stage with the current drones")
         rc_stage_parser.add_argument("stage", type=int,
                                      help="Which stage to execute. Must be consecutive to the previous stage")
+        
 
         return parser, command_parsers
 
