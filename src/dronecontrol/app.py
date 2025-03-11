@@ -337,7 +337,7 @@ class CommandScreen(Screen):
             commands = plugin.cli_commands
             for command_name in commands:
                 command = commands[command_name]
-                cli_command = f"{plugin.PREFIX}-{command_name}"
+                cli_command = f"{plugin.PREFIX}-{command_name}".lower()
                 self.logger.debug(f"Inspecting command {command_name}")
                 tmp_parser = self.command_parser.add_parser(cli_command)
                 for arg in check_cli_command_signatures(command):
@@ -398,10 +398,12 @@ class CommandScreen(Screen):
             self.logger.debug(repr(e), exc_info=True)
             return
         try:
-            if args.command != "kill" or args.drones:
+
+            command = args.command.lower()
+            if command != "kill" or args.drones:
                 self._kill_counter = 0
 
-            if args.command == "connect":
+            if command == "connect":
                 address = args.drone_address
                 if args.drone in DRONE_DICT and not address:
                     address = DRONE_DICT[args.drone]
@@ -409,34 +411,34 @@ class CommandScreen(Screen):
                     address = "udp://:14540"
                 tmp = asyncio.create_task(self.dm.connect_to_drone(args.drone, args.server_address,
                                                                    args.server_port, address, args.timeout))
-            elif args.command == "disconnect":
+            elif command == "disconnect":
                 tmp = asyncio.create_task(self.dm.disconnect(args.drones, force=args.force))
-            elif args.command == "arm":
+            elif command == "arm":
                 tmp = asyncio.create_task(self.dm.arm(args.drones, schedule=args.schedule))
-            elif args.command == "disarm":
+            elif command == "disarm":
                 tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
-            elif args.command == "takeoff":
+            elif command == "takeoff":
                 tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
-            elif args.command == "mode":
+            elif command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
-            elif args.command == "flyto":
+            elif command == "flyto":
                 tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
                                                          tol=args.tolerance, schedule=args.schedule))
-            elif args.command == "flytogps":
+            elif command == "flytogps":
                 tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
                                                              tol=args.tolerance, schedule=args.schedule))
-            elif args.command == "move":
+            elif command == "move":
                 tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw, no_gps=args.nogps,
                                                        tol=args.tolerance, schedule=args.schedule))
-            elif args.command == "land":
+            elif command == "land":
                 tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
-            elif args.command == "pause":
+            elif command == "pause":
                 self.dm.pause(args.drones)
-            elif args.command == "resume":
+            elif command == "resume":
                 self.dm.resume(args.drones)
-            elif args.command == "stop":
+            elif command == "stop":
                 tmp = asyncio.create_task(self.dm.action_stop(args.drones))
-            elif args.command == "kill":
+            elif command == "kill":
                 if not args.drones:
                     if self._kill_counter:
                         tmp = asyncio.create_task(self.dm.kill(args.drones))
@@ -445,34 +447,34 @@ class CommandScreen(Screen):
                         self._kill_counter += 1
                 else:
                     tmp = asyncio.create_task(self.dm.kill(args.drones))
-            elif args.command == "load":
+            elif command == "load":
                 tmp = asyncio.create_task(self.dm.load_plugin(args.plugin))
-            elif args.command == "unload":
+            elif command == "unload":
                 tmp = asyncio.create_task(self.dm.unload_plugin(args.plugin))
-            elif args.command == "loaded":
+            elif command == "loaded":
                 self.logger.info(f"Currently loaded plugins: {self.dm.currently_loaded_plugins()}")
-            elif args.command == "plugins":
+            elif command == "plugins":
                 available_but_not_loaded = [item for item in self.dm.plugin_options()
                                             if item not in self.dm.currently_loaded_plugins()]
                 self.logger.info(f"Available plugins to load: {available_but_not_loaded}")
-            elif args.command == "exit":
+            elif command in ["exit", "quit", "q"]:
                 tmp = asyncio.create_task(self.exit())
-            elif args.command in self.dynamic_commands:
-                self.logger.debug(f"Performing plugin action {args.command}")
+            elif command in self.dynamic_commands:
+                self.logger.debug(f"Performing plugin action {command}")
                 func_arguments = vars(args).copy()
                 func_arguments.pop("command")
-                tmp = asyncio.create_task(self.dynamic_commands[args.command](**func_arguments))
-            elif args.command == "cam-prep":
+                tmp = asyncio.create_task(self.dynamic_commands[command](**func_arguments))
+            elif command == "cam-prep":
                 tmp = asyncio.create_task(self.dm.prepare(args.drone))
-            elif args.command == "cam-settings":
+            elif command == "cam-settings":
                 tmp = asyncio.create_task(self.dm.get_settings(args.drone))
-            elif args.command == "cam-photo":
+            elif command == "cam-photo":
                 tmp = asyncio.create_task(self.dm.take_picture(args.drone))
-            elif args.command == "cam-start":
+            elif command == "cam-start":
                 tmp = asyncio.create_task(self.dm.start_video(args.drone))
-            elif args.command == "cam-stop":
+            elif command == "cam-stop":
                 tmp = asyncio.create_task(self.dm.stop_video(args.drone))
-            elif args.command == "cam-zoom":
+            elif command == "cam-zoom":
                 tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
         except Exception as e:
