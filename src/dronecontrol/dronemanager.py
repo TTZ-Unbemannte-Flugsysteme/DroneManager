@@ -16,7 +16,7 @@ from dronecontrol.scripts import ScriptsPlugin
 # TODO: Plugin Discovery
 PLUGINS = {
     "gimbal": GimbalPlugin,
-    "script": ScriptsPlugin
+    "scripts": ScriptsPlugin
     #"formations": FormationsPlugin,
 }
 

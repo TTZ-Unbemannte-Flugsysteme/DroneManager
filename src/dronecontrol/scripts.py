@@ -3,6 +3,7 @@ import math
 from typing import Dict
 import os
 import subprocess
+from concurrent.futures import ProcessPoolExecutor
 
 from dronecontrol.plugins import Plugin
 
@@ -10,7 +11,7 @@ from dronecontrol.plugins import Plugin
 
 class ScriptsPlugin(Plugin):
     
-    PREFIX = "scpt"
+    PREFIX = "script"
 
     def __init__(self, dm, logger):
         super().__init__(dm, logger)
@@ -20,6 +21,9 @@ class ScriptsPlugin(Plugin):
 
     async def start(self):
         self.logger.debug("Starting Script plugin...")
+
+    async def close(self):
+        self.logger.debug("Closing Script plugin...")
 
     async def execute_script(self, script_name: str):
         """ Run Script in ./Scripts with given Name"""
@@ -31,9 +35,7 @@ class ScriptsPlugin(Plugin):
             return
         try:
             # Execute the script
-            result = subprocess.run(
-                ["python3", script_path], capture_output=True, text=True, check=True
-            )
+            with ProcessPoolExecutor(max_workers=2) as executor: result = await asyncio.get_running_loop().run_in_executor(executor, script_function, script_path)
             self.logger.info(f"Script Output:\n{result.stdout}")
         except subprocess.CalledProcessError as e:
             self.logger.warning(f"Script execution failed: {e.stderr}")
@@ -42,3 +44,8 @@ class ScriptsPlugin(Plugin):
 
 
 
+def script_function(script_path):
+    result = subprocess.run(
+    ["python3", script_path], capture_output=True, text=True, check=True
+)
+    return result
