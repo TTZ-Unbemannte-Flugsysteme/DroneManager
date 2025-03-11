@@ -355,10 +355,14 @@ class DroneManager:
             self.logger.warning(f"No plugin '{plugin_name}' found!")
             return False
         self.logger.info(f"Loading plugin {plugin_name}...")
-        self.plugins.add(plugin_name)
-        plugin = PLUGINS[plugin_name](self, self.logger)
-        setattr(self, plugin_name, plugin)
-        await plugin.start()
+        try:
+            self.plugins.add(plugin_name)
+            plugin = PLUGINS[plugin_name](self, self.logger)
+            setattr(self, plugin_name, plugin)
+            await plugin.start()
+        except Exception as e:
+            self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
+            self.logger.debug(repr(e), exc_info=True)
         self.logger.debug(f"Performing callbacks for plugin loading...")
         for func in self._on_plugin_load_coros:
             res = await asyncio.create_task(func(plugin_name, plugin))
