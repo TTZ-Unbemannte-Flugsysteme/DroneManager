@@ -161,6 +161,8 @@ class CommandScreen(Screen):
         self.logger = self.app.logger
         self.log_pane_handlers = {}
 
+        # Parser stuff
+        self._exit_aliases = ["quit", "close", "q"]
         base_parser, command_parser = self._base_parser()
         self.parser = base_parser
         self.command_parser = command_parser
@@ -175,6 +177,8 @@ class CommandScreen(Screen):
 
         for plugin_name in DEFAULT_PLUGINS:
             self.dm.load_plugin(plugin_name)
+
+
 
     def _base_parser(self):
         parser = ArgParser(description="Interactive command line interface to connect and control multiple drones")
@@ -290,7 +294,7 @@ class CommandScreen(Screen):
 
         loaded_plugin_parser = command_parsers.add_parser("loaded", help="Prints a list of loaded plugins")
 
-        exit_parser = command_parsers.add_parser("exit", help="Exits the application")
+        exit_parser = command_parsers.add_parser("exit", aliases=self._exit_aliases, help="Exits the application")
 
         cam_prepare_parser = command_parsers.add_parser("cam-prep", help="Prepare camera plugin")
         cam_prepare_parser.add_argument("drone", type=str, help="Which drones should take a picture")
@@ -457,7 +461,7 @@ class CommandScreen(Screen):
                 available_but_not_loaded = [item for item in self.dm.plugin_options()
                                             if item not in self.dm.currently_loaded_plugins()]
                 self.logger.info(f"Available plugins to load: {available_but_not_loaded}")
-            elif command in ["exit", "quit", "q"]:
+            elif command == "exit" or command in self._exit_aliases:
                 tmp = asyncio.create_task(self.exit())
             elif command in self.dynamic_commands:
                 self.logger.debug(f"Performing plugin action {command}")
@@ -478,7 +482,7 @@ class CommandScreen(Screen):
                 tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
         except Exception as e:
-            self.logger.error("Encounted an exception executing the CLI!")
+            self.logger.error("Encountered an exception executing the CLI!")
             self.logger.debug(repr(e), exc_info=True)
 
     async def action_stop(self, names):
