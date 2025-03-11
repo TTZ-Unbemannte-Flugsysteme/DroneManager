@@ -88,7 +88,7 @@ class DroneManager:
         try:
             scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
-            self.logger.warning("Couldn't connect due to an exception: ", repr(e))
+            self.logger.warning("Couldn't connect due to an exception parsing the address")
             self.logger.debug(repr(e), exc_info=True)
             return False
         if scheme == "serial":
@@ -113,20 +113,20 @@ class DroneManager:
                         return False
                 drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 try:
-                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
-                                                                     component_id=self.component_id), timeout)
-                except (TimeoutError, CancelledError):
-                    self.logger.warning(f"Connection attempts to {name} timed out!")
-                    await self._remove_drone_object(name, drone)
-                    return False
-                except (OSError, socket.gaierror) as e:
-                    self.logger.info(f"Address error, probably due to invalid address")
-                    self.logger.debug(f"{repr(e)}", exc_info=True)
-                    await self._remove_drone_object(name, drone)
-                    return False
-                except AssertionError as e:
-                    self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
-                    self.logger.debug(f"{repr(e)}", exc_info=True)
+                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id, component_id=self.component_id), timeout)
+                except (CancelledError, TimeoutError, OSError, socket.gaierror, AssertionError) as e:
+                    if isinstance(e, CancelledError):
+                        self.logger.info(f"Aborting connection attempt to {name}")
+                    elif isinstance(e, TimeoutError):
+                        self.logger.warning(f"Connection attempts to {name} timed out!")
+                    elif isinstance(e, OSError) or isinstance(e, socket.gaierror):
+                        self.logger.error(f"Address error, probably due to invalid address")
+                        self.logger.debug(f"{repr(e)}", exc_info=True)
+                    else:
+                        self.logger.error("Connection failed due to an exception")
+                        self.logger.debug(f"{repr(e)}", exc_info=True)
+                    if isinstance(connected, asyncio.Task):
+                        connected.cancel()
                     await self._remove_drone_object(name, drone)
                     return False
                 if connected:
@@ -145,13 +145,12 @@ class DroneManager:
                     self.logger.warning(f"Failed to connect to drone {name}!")
                     await self._remove_drone_object(name, drone)
                     return False
-            except (TimeoutError, CancelledError):
+            except TimeoutError:
                 self.logger.warning(f"Connection attempts to {name} timed out!")
-                if drone is not None:
-                    await self._remove_drone_object(name, drone)
+                await self._remove_drone_object(name, drone)
                 return False
             except Exception as e:
-                self.logger.info("Couldn't connect to the drone due to an exception: ", repr(e))
+                self.logger.error("Couldn't connect to the drone due to an exception: ", repr(e))
                 self.logger.debug(repr(e), exc_info=True)
                 if drone is not None:
                     await self._remove_drone_object(name, drone)
@@ -363,12 +362,14 @@ class DroneManager:
         except Exception as e:
             self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
             self.logger.debug(repr(e), exc_info=True)
+            return False
         self.logger.debug(f"Performing callbacks for plugin loading...")
         for func in self._on_plugin_load_coros:
             res = await asyncio.create_task(func(plugin_name, plugin))
             if isinstance(res, Exception):
-                self.logger.warning("Couldn't load a callback plugin.")
+                self.logger.warning("Couldn't perform a callback for this plugin!")
         self.logger.info(f"Completed loading Plugin {plugin_name}!")
+        return True
 
     async def unload_plugin(self, plugin_name):
         if plugin_name not in self.plugins:

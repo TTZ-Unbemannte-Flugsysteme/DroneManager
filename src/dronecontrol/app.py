@@ -462,7 +462,7 @@ class CommandScreen(Screen):
                                             if item not in self.dm.currently_loaded_plugins()]
                 self.logger.info(f"Available plugins to load: {available_but_not_loaded}")
             elif command == "exit" or command in self._exit_aliases:
-                tmp = asyncio.create_task(self.exit())
+                exit_task = asyncio.create_task(self.exit())
             elif command in self.dynamic_commands:
                 self.logger.debug(f"Performing plugin action {command}")
                 func_arguments = vars(args).copy()
@@ -507,9 +507,13 @@ class CommandScreen(Screen):
                 if self.dm.drones[name].is_armed:
                     stop_app = False
             if stop_app:
-                await asyncio.gather(*[self.dm.drones[name].disconnect() for name in self.dm.drones])
+                await asyncio.gather(*[self.dm.drones[name].disconnect(force=True) for name in self.dm.drones])
+                for task in self.running_tasks:
+                    if isinstance(task, asyncio.Task):
+                        task.cancel()
+                await asyncio.sleep(0.1)  # Beauty pause
                 self.logger.info("Exiting...")
-                await asyncio.sleep(2)  # Beauty pause
+                await asyncio.sleep(1)  # Beauty pause
                 self.app.exit()
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)
