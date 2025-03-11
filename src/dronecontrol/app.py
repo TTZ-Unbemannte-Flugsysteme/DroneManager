@@ -154,7 +154,7 @@ class CommandScreen(Screen):
         super().__init__(*args, **kwargs)
         self.dm: DroneManager = self.app.dm
         self.drone_widgets: dict[str, Widget] = {}
-        self.running_tasks = set()
+        self.running_tasks: set[asyncio.Task] = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self._kill_counter = 0  # Require kill all to be entered twice
@@ -385,7 +385,7 @@ class CommandScreen(Screen):
 
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
-        value = message.value
+        value = message.value.lower()
         message.control.clear()
         tmp = None
         try:

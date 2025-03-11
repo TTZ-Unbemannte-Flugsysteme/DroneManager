@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import os
 import socket
+import sys
 from asyncio.exceptions import TimeoutError, CancelledError
 
 from dronecontrol.drone import Drone, parse_address
@@ -33,13 +34,14 @@ DRONE_DICT = {
 
 
 class DroneManager:
+    # TODO: stop/close function that neatly ends all drone objects when not using app (app should also call this)
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
     # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
     #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
 
-    def __init__(self, drone_class, logger=None):
+    def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
         self.drones: dict[str, Drone] = {}
         self.running_tasks = set()
@@ -70,6 +72,12 @@ class DroneManager:
             self.logger.addHandler(file_handler)
         else:
             self.logger = logger
+
+        if log_to_console:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(console_log_level)
+            console_handler.setFormatter(common_formatter)
+            self.logger.addHandler(console_handler)
 
     async def connect_to_drone(self,
                                name: str,
