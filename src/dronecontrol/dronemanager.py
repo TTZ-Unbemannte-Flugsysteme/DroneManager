@@ -34,12 +34,12 @@ DRONE_DICT = {
 
 
 class DroneManager:
-    # TODO: stop/close function that neatly ends all drone objects when not using app (app should also call this)
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
-    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
-    #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
+    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a
+    #  separate function that awaits them and does error handling? Alternatively, the CLI function should do some final
+    #  error catching somehow, maybe the same way?
 
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
@@ -113,7 +113,8 @@ class DroneManager:
                         return False
                 drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 try:
-                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id, component_id=self.component_id), timeout)
+                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
+                                                                     component_id=self.component_id), timeout)
                 except (CancelledError, TimeoutError, OSError, socket.gaierror, AssertionError) as e:
                     if isinstance(e, CancelledError):
                         self.logger.info(f"Aborting connection attempt to {name}")
@@ -256,6 +257,10 @@ class DroneManager:
                                         f"Flying to {lat, long, alt} with heading {yaw} and tolerance {tol}",
                                         schedule=schedule,
                                         lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
+
+    async def fly_to_point(self, name, waypoint, tol=0.25, schedule=True):
+        await self._single_drone_action(self.drone_class.fly_to, name, f"Flying to waypoint {waypoint}",
+                                        schedule=schedule, waypoint=waypoint, tolerance=tol)
 
     async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
         await self._single_drone_action(self.drone_class.move, name,

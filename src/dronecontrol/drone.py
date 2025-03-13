@@ -279,7 +279,8 @@ class Drone(ABC, threading.Thread):
         pass
 
     @abstractmethod
-    async def fly_to(self, x=None, y=None, z=None, lat=None, long=None, amsl=None, yaw=None, tolerance=0.25):
+    async def fly_to(self, x: float = None, y: float = None, z: float = None, lat: float = None, long: float = None,
+                     amsl: float = None, yaw: float = None, waypoint: Waypoint = None, tolerance=0.25):
         """ Fly to the specified position.
 
         :param x:
@@ -289,6 +290,7 @@ class Drone(ABC, threading.Thread):
         :param long:
         :param amsl:
         :param yaw:
+        :param waypoint:
         :param tolerance:
         :return:
         """
@@ -847,11 +849,12 @@ class DroneMAVSDK(Drone):
             await asyncio.sleep(1/freq)
 
     async def fly_to(self, x=None, y=None, z=None,
-                     lat=None, long=None, amsl=None, yaw=None,
+                     lat=None, long=None, amsl=None, yaw=None, waypoint: Waypoint | None = None,
                      tolerance=0.25, put_into_offboard=True):
         """ Fly to a specified point in offboard mode. Uses trajectory generators and followers to get there.
 
-        If both GPS and local coordinates are provided we use the GPS coordinates and local coordinates are ignored.
+        If multiple target are provided (for example GPS and local coordinates), we prefer coordinates in this fashion:
+        Waypoint > GPS > local, i.e. in the example, the local coordinates would be ignored.
 
         :param x:
         :param y:
@@ -860,6 +863,7 @@ class DroneMAVSDK(Drone):
         :param long:
         :param amsl:
         :param yaw:
+        :param waypoint:
         :param tolerance:
         :param put_into_offboard:
         :return:
@@ -868,8 +872,9 @@ class DroneMAVSDK(Drone):
         if not self._can_do_in_air_commands():
             raise RuntimeError("Can't fly a landed or unarmed drone!")
         assert ((x is not None and y is not None and z is not None)
-                or (lat is not None, long is not None, amsl is not None)), \
-            "Must provide a full set of either NED or GPS coordinates!"
+                or (lat is not None, long is not None, amsl is not None)
+                or waypoint is not None), \
+            "Must provide a full set of either NED coordinates, GPS coordinates or a waypoint!"
 
         # Check that we have a trajectory generator and follower who are compatible with each other and the drone
         assert (self.trajectory_follower is not None
@@ -877,8 +882,16 @@ class DroneMAVSDK(Drone):
         assert (self.trajectory_generator is not None
                 and self.trajectory_generator.waypoint_type in self.trajectory_follower.WAYPOINT_TYPES)
 
-        # Use GPS if GPS coordinates are provided
-        use_gps = lat is not None and long is not None and amsl is not None
+        # Prefer waypoint over GPS over local
+        if waypoint is not None:
+            use_gps = (waypoint.type == WayPointType.POS_GLOBAL)
+            yaw = waypoint.yaw
+            if use_gps:
+                lat, long, amsl = waypoint.gps
+            else:
+                x, y, z = waypoint.pos
+        else:
+            use_gps = lat is not None and long is not None and amsl is not None
 
         # Maintain current yaw if no yaw is provided
         if yaw is None:

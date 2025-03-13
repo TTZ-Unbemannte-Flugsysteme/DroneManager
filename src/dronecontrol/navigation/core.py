@@ -22,7 +22,7 @@ class Waypoint:
                  vel: np.ndarray | None = None,
                  acc: np.ndarray | None = None,
                  gps: np.ndarray | None = None,
-                 yaw: float | np.ndarray = 0.0):
+                 yaw: float | None = None):
         self._array = np.empty(
             (13,))  # Internal data structure, form [x, y, z, xvel, yvel, zvel, xacc, yacc, zacc, lat, long, amsl, yaw]
         self._array[:] = np.nan
