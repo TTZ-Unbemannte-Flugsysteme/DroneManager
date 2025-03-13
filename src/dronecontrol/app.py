@@ -178,8 +178,6 @@ class CommandScreen(Screen):
         for plugin_name in DEFAULT_PLUGINS:
             self.dm.load_plugin(plugin_name)
 
-
-
     def _base_parser(self):
         parser = ArgParser(description="Interactive command line interface to connect and control multiple drones")
         command_parsers = parser.add_subparsers(title="command", description="Command to execute.", dest="command")
@@ -389,11 +387,13 @@ class CommandScreen(Screen):
 
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
-        value = message.value.lower()
+        value = message.value
         message.control.clear()
         tmp = None
         try:
-            args = self.parser.parse_args(shlex.split(value))
+            values = shlex.split(value)
+            values[0] = values[0].lower()
+            args = self.parser.parse_args(values)
         except ValueError as e:
             self.logger.warning(str(e))
             return
