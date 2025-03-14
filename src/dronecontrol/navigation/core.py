@@ -191,10 +191,18 @@ class TrajectoryFollower(ABC):
         return self._active
 
     async def follow(self):
+        """ Follows waypoints produced from a trajectory generator by sending setpoints to the drone FC.
+
+        Requests a new waypoint from the TG when get_next_waypoint returns True. If the TG does not produce a waypoint,
+        holds position instead.
+        :return:
+        """
         # Use current position as dummy waypoint in case trajectory generator can't produce any yet.
+        # TODO: A timer or something so we don't spam the log with "still using current position"
         dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
                                   vel=np.zeros((3,)), yaw=self.drone.attitude[2])
         have_waypoints = False
+        using_current_position = False
         waypoint = dummy_waypoint
         while self.is_active:
             try:
@@ -202,16 +210,24 @@ class TrajectoryFollower(ABC):
                     self.logger.debug("Getting new waypoint from trajectory generator...")
                     waypoint = self.drone.trajectory_generator.next()
                     if not waypoint:
-                        if have_waypoints:
-                            self.logger.debug("Generator no longer producing waypoints, using current position")
-                            # If we had waypoints, but lost them, use the current position as a dummy waypoint
-                            have_waypoints = False
-                        else:  # Never had a waypoint
-                            self.logger.debug("Don't have any waypoints from the generator yet, using current position")
-                        waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
-                                            yaw=self.drone.attitude[2])
+                        if not using_current_position:
+                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
+                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
+                                                      yaw=self.drone.attitude[2])
+                            if have_waypoints:
+                                self.logger.debug("Generator no longer producing waypoints, using current position")
+                                # If we had waypoints, but lost them, use the current position as a dummy waypoint
+                                have_waypoints = False
+                                using_current_position = True
+                            else:  # Never had a waypoint
+                                self.logger.debug("Don't have any waypoints from the generator yet, using current position")
+                                using_current_position = True
+                        else:
+                            self.logger.debug("Still using current position...")
+                            waypoint = dummy_waypoint
                     else:
                         have_waypoints = True
+                        using_current_position = False
                     self.current_waypoint = waypoint
                 await self.set_setpoint(waypoint)
                 await asyncio.sleep(self.dt)
