@@ -2,9 +2,11 @@ import asyncio
 import datetime
 import os
 import socket
+import sys
 from asyncio.exceptions import TimeoutError, CancelledError
 
-from dronecontrol.drone import Drone, parse_address, RectLocalFence
+from dronecontrol.drone import Drone, parse_address
+from dronecontrol.navigation.rectlocalfence import RectLocalFence
 from dronecontrol.utils import common_formatter, get_free_port
 
 import logging
@@ -42,9 +44,13 @@ DRONE_DICT = {
 
 class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
-    # TODO: Handle MAVSDK crashes, in particular the grpc failure, somehow
+    # TODO: Better error handling for the multi_action tasks
+    # TODO: Handle MAVSDK crashes
+    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a
+    #  separate function that awaits them and does error handling? Alternatively, the CLI function should do some final
+    #  error catching somehow, maybe the same way?
 
-    def __init__(self, drone_class, logger=None):
+    def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
         self.drones: dict[str, Drone] = {}
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
@@ -75,6 +81,12 @@ class DroneManager:
         else:
             self.logger = logger
 
+        if log_to_console:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(console_log_level)
+            console_handler.setFormatter(common_formatter)
+            self.logger.addHandler(console_handler)
+
     async def connect_to_drone(self,
                                name: str,
                                mavsdk_server_address: str | None,
@@ -84,7 +96,7 @@ class DroneManager:
         try:
             scheme, parsed_addr, parsed_port = parse_address(string=drone_address)
         except Exception as e:
-            self.logger.warning("Couldn't connect due to an exception: ", repr(e))
+            self.logger.warning("Couldn't connect due to an exception parsing the address")
             self.logger.debug(repr(e), exc_info=True)
             return False
         if scheme == "serial":
@@ -111,18 +123,19 @@ class DroneManager:
                 try:
                     connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
                                                                      component_id=self.component_id), timeout)
-                except (TimeoutError, CancelledError):
-                    self.logger.warning(f"Connection attempts to {name} timed out!")
-                    await self._remove_drone_object(name, drone)
-                    return False
-                except (OSError, socket.gaierror) as e:
-                    self.logger.info(f"Address error, probably due to invalid address")
-                    self.logger.debug(f"{repr(e)}", exc_info=True)
-                    await self._remove_drone_object(name, drone)
-                    return False
-                except AssertionError as e:
-                    self.logger.info("Connection failed, we only support UDP connection protocol at the moment.")
-                    self.logger.debug(f"{repr(e)}", exc_info=True)
+                except (CancelledError, TimeoutError, OSError, socket.gaierror, AssertionError) as e:
+                    if isinstance(e, CancelledError):
+                        self.logger.info(f"Aborting connection attempt to {name}")
+                    elif isinstance(e, TimeoutError):
+                        self.logger.warning(f"Connection attempts to {name} timed out!")
+                    elif isinstance(e, OSError) or isinstance(e, socket.gaierror):
+                        self.logger.error(f"Address error, probably due to invalid address")
+                        self.logger.debug(f"{repr(e)}", exc_info=True)
+                    else:
+                        self.logger.error("Connection failed due to an exception")
+                        self.logger.debug(f"{repr(e)}", exc_info=True)
+                    if isinstance(connected, asyncio.Task):
+                        connected.cancel()
                     await self._remove_drone_object(name, drone)
                     return False
                 if connected:
@@ -141,13 +154,12 @@ class DroneManager:
                     self.logger.warning(f"Failed to connect to drone {name}!")
                     await self._remove_drone_object(name, drone)
                     return False
-            except (TimeoutError, CancelledError):
+            except TimeoutError:
                 self.logger.warning(f"Connection attempts to {name} timed out!")
-                if drone is not None:
-                    await self._remove_drone_object(name, drone)
+                await self._remove_drone_object(name, drone)
                 return False
             except Exception as e:
-                self.logger.info("Couldn't connect to the drone due to an exception: ", repr(e))
+                self.logger.error("Couldn't connect to the drone due to an exception: ", repr(e))
                 self.logger.debug(repr(e), exc_info=True)
                 if drone is not None:
                     await self._remove_drone_object(name, drone)
@@ -272,6 +284,10 @@ class DroneManager:
                                         schedule=schedule,
                                         lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
 
+    async def fly_to_point(self, name, waypoint, tol=0.25, schedule=True):
+        await self._single_drone_action(self.drone_class.fly_to, name, f"Flying to waypoint {waypoint}",
+                                        schedule=schedule, waypoint=waypoint, tolerance=tol)
+
     async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
         await self._single_drone_action(self.drone_class.move, name,
                                         f"Moving by {x, y, z} and heading {yaw} and tolerance {tol}",
@@ -369,16 +385,22 @@ class DroneManager:
             self.logger.warning(f"No plugin '{plugin_name}' found!")
             return False
         self.logger.info(f"Loading plugin {plugin_name}...")
-        self.plugins.add(plugin_name)
-        plugin = PLUGINS[plugin_name](self, self.logger)
-        setattr(self, plugin_name, plugin)
-        await plugin.start()
+        try:
+            self.plugins.add(plugin_name)
+            plugin = PLUGINS[plugin_name](self, self.logger)
+            setattr(self, plugin_name, plugin)
+            await plugin.start()
+        except Exception as e:
+            self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
+            self.logger.debug(repr(e), exc_info=True)
+            return False
         self.logger.debug(f"Performing callbacks for plugin loading...")
         for func in self._on_plugin_load_coros:
             res = await asyncio.create_task(func(plugin_name, plugin))
             if isinstance(res, Exception):
-                self.logger.warning("Couldn't load a callback plugin.")
+                self.logger.warning("Couldn't perform a callback for this plugin!")
         self.logger.info(f"Completed loading Plugin {plugin_name}!")
+        return True
 
     async def unload_plugin(self, plugin_name):
         if plugin_name not in self.plugins:
