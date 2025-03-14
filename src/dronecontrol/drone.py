@@ -103,22 +103,26 @@ class Drone(ABC, threading.Thread):
 
     async def _task_scheduler(self):
         while True:
-            while len(self.action_queue) > 0:
-                if self.is_paused:
-                    await asyncio.sleep(0.1)
+            try:
+                while len(self.action_queue) > 0:
+                    if self.is_paused:
+                        await asyncio.sleep(0.1)
+                    else:
+                        action, fut = self.action_queue.popleft()
+                        self.current_action = asyncio.create_task(action)
+                        try:
+                            result = await self.current_action
+                            fut.set_result(result)
+                            self.current_action = None
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            fut.set_exception(e)
                 else:
-                    action, fut = self.action_queue.popleft()
-                    self.current_action = asyncio.create_task(action)
-                    try:
-                        result = await self.current_action
-                        fut.set_result(result)
-                        self.current_action = None
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:
-                        fut.set_exception(e)
-            else:
-                await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)
+            except Exception as e:
+                self.logger.error("Encountered an exception in the task scheduler")
+                self.logger.debug(repr(e), exc_info=True)
 
     def schedule_task(self, coro) -> asyncio.Future:
         fut = asyncio.get_running_loop().create_future()
@@ -405,9 +409,7 @@ class DroneMAVSDK(Drone):
         # planning algorithms for their time resolution.
         self.position_update_rate = 5
 
-        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
-
-        #self.trajectory_generator = DirectTargetGenerator(self, self.logger, WayPointType.POS_NED)
+        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
         try:
             self.trajectory_generator = GMP3Generator(self, 1/self.position_update_rate, self.logger, use_gps=False)
         except Exception as e:
@@ -415,8 +417,6 @@ class DroneMAVSDK(Drone):
             self.logger.debug(repr(e), exc_info=True)
         self.trajectory_follower = DirectSetpointFollower(self, self.logger, 1/self.position_update_rate,
                                                           WayPointType.POS_VEL_NED)
-        #self.trajectory_follower = VelocityControlFollower(self, self.logger, 1/self.position_update_rate)
-        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
 
         attr_string = "\n   ".join(["{}: {}".format(key, value) for key, value in self.__dict__.items()])
         self.logger.debug(f"Initialized Drone {self.name}, {self.__class__.__name__}:\n   {attr_string}")

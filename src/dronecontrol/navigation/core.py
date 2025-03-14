@@ -214,17 +214,16 @@ class TrajectoryFollower(ABC):
                             self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
                             dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
                                                       yaw=self.drone.attitude[2])
+                            using_current_position = True
                             if have_waypoints:
                                 self.logger.debug("Generator no longer producing waypoints, using current position")
                                 # If we had waypoints, but lost them, use the current position as a dummy waypoint
-                                have_waypoints = False
-                                using_current_position = True
                             else:  # Never had a waypoint
                                 self.logger.debug("Don't have any waypoints from the generator yet, using current position")
-                                using_current_position = True
-                        else:
+                        if using_current_position:
                             self.logger.debug("Still using current position...")
                             waypoint = dummy_waypoint
+                        have_waypoints = False
                     else:
                         have_waypoints = True
                         using_current_position = False

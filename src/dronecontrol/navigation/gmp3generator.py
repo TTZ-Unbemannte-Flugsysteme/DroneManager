@@ -49,7 +49,7 @@ class GMP3Generator(TrajectoryGenerator):
             self.logger.info("Calculating path...")
             cur_x, cur_y, _ = self.drone.position_ned
             target_x, target_y, _ = self.target_position.pos
-            with ProcessPoolExecutor(max_workers=2) as executor:
+            with ProcessPoolExecutor(max_workers=4) as executor:
                 self.waypoints = await asyncio.get_running_loop().run_in_executor(executor, _calculate_path, cur_x,
                                                                                   cur_y, target_x, target_y, self.gmp3)
             valid = True
