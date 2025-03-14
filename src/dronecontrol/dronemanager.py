@@ -176,23 +176,7 @@ class DroneManager:
                     self.logger.info(f"Disconnected {name}")
 
     async def _single_drone_action(self, action, name, start_string, *args, schedule=False, **kwargs):
-        try:
-            coro = action(self.drones[name], *args, **kwargs)
-            if schedule:
-                self.logger.info("Queuing action: " + start_string)
-                result = self.drones[name].schedule_task(coro)
-            else:
-                self.logger.info(start_string)
-                result = self.drones[name].execute_task(coro)
-            await result
-            if isinstance(result, Exception):
-                self.logger.error(f"Couldn't execute command due to: {str(result)}")
-            return result
-        except KeyError:
-            self.logger.warning(f"No drone named {name}!")
-        except Exception as e:
-            self.logger.error(repr(e))
-            self.logger.debug(repr(e), exc_info=True)
+        return await self._multiple_drone_action(action, [name], start_string, *args, schedule=schedule, **kwargs)
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         try:
@@ -213,6 +197,10 @@ class DroneManager:
         except Exception as e:
             self.logger.error(repr(e))
             self.logger.debug(repr(e), exc_info=True)
+
+    async def _multiple_drone_multiple_params_action(self, action, names, start_string, *args, schedule=False, **kwargs):
+        # TODO: Allow a list of drones and args, kwargs and scheduleing params and unpack these for each drone.
+        pass
 
     async def arm(self, names, schedule=False):
         return await self._multiple_drone_action(self.drone_class.arm, names,
@@ -247,12 +235,34 @@ class DroneManager:
             self.drones[name].resume()
 
     async def fly_to(self, name, x, y, z, yaw, tol=0.25, schedule=True):
+        """Fly the drone to an absolute position in the local coordinate system.
+
+        :param name:
+        :param x:
+        :param y:
+        :param z:
+        :param yaw:
+        :param tol:
+        :param schedule:
+        :return:
+        """
         await self._single_drone_action(self.drone_class.fly_to, name,
                                         f"Flying to {x, y, z} with heading {yaw} and tolerance {tol}",
                                         schedule=schedule,
                                         x=x, y=y, z=z, yaw=yaw, tolerance=tol)
 
     async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25, schedule=True):
+        """ Fly the drone to an absolute GPS position.
+
+        :param name:
+        :param lat:
+        :param long:
+        :param alt:
+        :param yaw:
+        :param tol:
+        :param schedule:
+        :return:
+        """
         await self._single_drone_action(self.drone_class.fly_to, name,
                                         f"Flying to {lat, long, alt} with heading {yaw} and tolerance {tol}",
                                         schedule=schedule,
@@ -263,6 +273,21 @@ class DroneManager:
                                         schedule=schedule, waypoint=waypoint, tolerance=tol)
 
     async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
+        """ Move the drone by x, y, z meters. Which coordinate system is used depends on no_gps.
+
+        :param name:
+        :param x: How many meters to move along the "x" axis. For local coordinates, this is usually either North or
+                  Forward. For GPS, it is north.
+        :param y: How many meters to move along the "y" axis. For local coordinates, this is usually either East or
+                  Right. For GPS, it is east.
+        :param z: How many meters to move along the "z" axis. For local coordinates, this is usually down.
+                  For GPS, this is up.
+        :param yaw:
+        :param no_gps: If True, use the local coordinate system, otherwise use GPS.
+        :param tol:
+        :param schedule:
+        :return:
+        """
         await self._single_drone_action(self.drone_class.move, name,
                                         f"Moving by {x, y, z} and heading {yaw} and tolerance {tol}",
                                         x, y, z, yaw,
