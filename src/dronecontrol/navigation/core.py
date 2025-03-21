@@ -212,13 +212,10 @@ class TrajectoryFollower(ABC):
         while self.is_active:
             try:
                 if self.get_next_waypoint():
-                    self.logger.debug("Getting new waypoint from trajectory generator...")
+                    #self.logger.debug("Getting new waypoint from trajectory generator...")
                     waypoint = self.drone.trajectory_generator.next()
                     if not waypoint:
                         if not using_current_position:
-                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
-                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
-                                                      yaw=self.drone.attitude[2])
                             if have_waypoints:
                                 self.logger.debug("Generator no longer producing waypoints, using current position")
                                 # If we had waypoints, but lost them, use the current position as a dummy waypoint
@@ -227,8 +224,12 @@ class TrajectoryFollower(ABC):
                             else:  # Never had a waypoint
                                 self.logger.debug("Don't have any waypoints from the generator yet, using current position")
                                 using_current_position = True
+                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
+                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
+                                                      yaw=self.drone.attitude[2])
+                            waypoint = dummy_waypoint
                         else:
-                            self.logger.debug("Still using current position...")
+                            #self.logger.debug("Still using current position...")
                             waypoint = dummy_waypoint
                     else:
                         have_waypoints = True
