@@ -18,7 +18,8 @@ class VelocityFollower(TrajectoryFollower):
     WAYPOINT_TYPES = {WayPointType.POS_NED}
     CAN_DO_GPS = False
 
-    def __init__(self, drone: "dronecontrol.drone.Drone", logger, dt, max_vel_h=1.0, max_vel_z=0.5, max_acc_h=0.5, max_acc_z=0.25, max_yaw_rate=60):
+    def __init__(self, drone: "dronecontrol.drone.Drone", logger, dt, max_vel_h=1.0, max_vel_z=0.5, max_acc_h=0.5,
+                 max_acc_z=0.25, max_yaw_rate=60):
         super().__init__(drone, logger, dt, setpoint_type=WayPointType.VEL_NED)
         self.max_vel_h = max_vel_h
         self.max_vel_z = max_vel_z

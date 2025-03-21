@@ -441,14 +441,15 @@ class CommandScreen(Screen):
             elif command == "fence":
                 self.dm.set_fence(args.drones, args.nl, args.nu, args.el, args.eu, args.h)
             elif command == "flyto":
-                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, local=[args.x, args.y, args.z], yaw=args.yaw,
                                                          tol=args.tolerance, schedule=args.schedule))
             elif command == "flytogps":
-                tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                             tol=args.tolerance, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, gps=[args.lat, args.long, args.alt], yaw=args.yaw,
+                                                         tol=args.tolerance, schedule=args.schedule))
             elif command == "move":
-                tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw, no_gps=args.nogps,
-                                                       tol=args.tolerance, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.move(args.drone, [args.x, args.y, args.z], yaw=args.yaw,
+                                                       use_gps=not args.nogps, tol=args.tolerance,
+                                                       schedule=args.schedule))
             elif command == "land":
                 tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
             elif command == "pause":
@@ -530,6 +531,8 @@ class CommandScreen(Screen):
                 self.logger.info("Exiting...")
                 await asyncio.sleep(1)  # Beauty pause
                 self.app.exit()
+            else:
+                self.logger.warning("Can't exit the app with armed drones!")
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)
 

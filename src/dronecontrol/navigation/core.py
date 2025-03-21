@@ -23,9 +23,10 @@ class Waypoint:
                  acc: np.ndarray | None = None,
                  gps: np.ndarray | None = None,
                  yaw: float | None = None):
-        self._array = np.empty(
-            (13,))  # Internal data structure, form [x, y, z, xvel, yvel, zvel, xacc, yacc, zacc, lat, long, amsl, yaw]
-        self._array[:] = np.nan
+        # Internal data structure, form [x, y, z, xvel, yvel, zvel, xacc, yacc, zacc, lat, long, amsl, yaw]
+        self._array: np.ndarray[float] = np.empty((13,))
+
+        self._array[:] = None
         self._array[-1] = yaw
         match waypoint_type:
             case WayPointType.POS_NED:
@@ -50,21 +51,41 @@ class Waypoint:
     def pos(self):
         return self._array[:3]
 
+    @pos.setter
+    def pos(self, new_pos: np.ndarray):
+        self._array[:3] = new_pos
+
     @property
     def vel(self):
         return self._array[3:6]
+
+    @vel.setter
+    def vel(self, new_vel: np.ndarray):
+        self._array[3:6] = new_vel
 
     @property
     def acc(self):
         return self._array[6:9]
 
+    @acc.setter
+    def acc(self, new_acc: np.ndarray):
+        self._array[6:9] = new_acc
+
     @property
     def gps(self):
         return self._array[9:12]
 
+    @gps.setter
+    def gps(self, new_gps: np.ndarray):
+        self._array[9:12] = new_gps
+
     @property
     def yaw(self):
         return self._array[-1]
+
+    @yaw.setter
+    def yaw(self, new_yaw: float):
+        self._array[-1] = new_yaw
 
     def distance(self, other: "Waypoint"):
         return dist_ned(self.pos, other.pos)
@@ -81,8 +102,8 @@ class Waypoint:
         return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
 
     def offset_gps(self, initial: "Waypoint", target: "Waypoint"):
-        """ Creates a vector between the initial and target waypoint and then creates a new Waypoint offset from this
-        one by the same distance and heading."""
+        """ Creates a vector between two waypoints and then creates a new Waypoint offset from this
+        waypoint by the same distance and heading."""
         new_gps = offset_from_gps(self.gps, initial.gps, target.gps)
         return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
 
@@ -207,21 +228,22 @@ class TrajectoryFollower(ABC):
         while self.is_active:
             try:
                 if self.get_next_waypoint():
-                    self.logger.debug("Getting new waypoint from trajectory generator...")
+                    #self.logger.debug("Getting new waypoint from trajectory generator...")
                     waypoint = self.drone.trajectory_generator.next()
                     if not waypoint:
                         if not using_current_position:
-                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
-                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
-                                                      yaw=self.drone.attitude[2])
-                            using_current_position = True
                             if have_waypoints:
                                 self.logger.debug("Generator no longer producing waypoints, using current position")
                                 # If we had waypoints, but lost them, use the current position as a dummy waypoint
                             else:  # Never had a waypoint
                                 self.logger.debug("Don't have any waypoints from the generator yet, using current position")
-                        if using_current_position:
-                            self.logger.debug("Still using current position...")
+                                using_current_position = True
+                            self.logger.debug(f"No waypoints, current position: {self.drone.position_ned}")
+                            dummy_waypoint = Waypoint(WayPointType.POS_NED, pos=self.drone.position_ned,
+                                                      yaw=self.drone.attitude[2])
+                            waypoint = dummy_waypoint
+                        else:
+                            #self.logger.debug("Still using current position...")
                             waypoint = dummy_waypoint
                         have_waypoints = False
                     else:
