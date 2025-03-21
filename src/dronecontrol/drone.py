@@ -549,12 +549,16 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._att_check()))
         self._running_tasks.append(asyncio.create_task(self._battery_check()))
         self._running_tasks.append(asyncio.create_task(self._status_check()))
+        self._running_tasks.append(asyncio.create_task(self._ensure_message_rates()))
 
     async def _configure_message_rates(self) -> None:
         try:
             await self.system.telemetry.set_rate_position(self.position_update_rate)
             await self.system.telemetry.set_rate_position_velocity_ned(self.position_update_rate)
             await self.system.telemetry.set_rate_attitude_euler(self.position_update_rate)
+            await self.system.telemetry.set_rate_altitude(self.position_update_rate)
+            await self.system.telemetry.set_rate_battery(self.position_update_rate)
+            await self.system.telemetry.set_rate_gps_info(self.position_update_rate)
         except Exception as e:
             self.logger.warning(f"Couldn't set message rate!")
             self.logger.debug(f"{repr(e)}", exc_info=True)
@@ -567,6 +571,12 @@ class DroneMAVSDK(Drone):
         else:
             async for state in self.system.core.connection_state():
                 self._is_connected = state.is_connected
+
+    async def _ensure_message_rates(self):
+        # Send our desired message rates every so often to ensure
+        while True:
+            await self._configure_message_rates()
+            await asyncio.sleep(5)
 
     async def _arm_check(self):
         async for arm in self.system.telemetry.armed():

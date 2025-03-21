@@ -1,6 +1,7 @@
 import asyncio
 import numpy as np
 import time
+import pickle
 from concurrent.futures import ProcessPoolExecutor
 
 from dronecontrol.navigation.core import TrajectoryGenerator, Waypoint, WayPointType
@@ -22,8 +23,8 @@ class GMP3Generator(TrajectoryGenerator):
             "alpha": 0.8,
             "wdamp": 1,
             "delta": 0.01,
-            "vx_max": 0.1,
-            "vy_max": 0.1,
+            "vx_max": 0.2,
+            "vy_max": 0.2,
             "Q11": 1.0,
             "Q22": 1.0,
             "Q12": 0.01,
@@ -31,9 +32,9 @@ class GMP3Generator(TrajectoryGenerator):
             "x_max": 4.5,
             "y_max": 1.5,
             "obstacles": [
-                (3, 1, 0.5),
-                (0, 0, 0.75),
-                (-3, 0.5, 0.666)
+                (2.5, 1, 1),
+                (0, -0.5, 1.25),
+                (-2.5, 1, 1.111)
             ],
         }
         self.config = GMP3Config(**self.GMP3_PARAMS)
@@ -49,7 +50,7 @@ class GMP3Generator(TrajectoryGenerator):
             self.logger.info("Calculating path...")
             cur_x, cur_y, _ = self.drone.position_ned
             target_x, target_y, _ = self.target_position.pos
-            with ProcessPoolExecutor(max_workers=4) as executor:
+            with ProcessPoolExecutor(max_workers=1) as executor:
                 self.waypoints = await asyncio.get_running_loop().run_in_executor(executor, _calculate_path, cur_x,
                                                                                   cur_y, target_x, target_y, self.gmp3)
             valid = True
@@ -105,4 +106,6 @@ def _calculate_path(cur_x, cur_y, target_x, target_y, gmp3):
     xdots = gmp3.xdot
     ydots = gmp3.ydot
     waypoints = list(zip(ts, xs, ys, xdots, ydots))
+    with open("waypoints.dump", "wb") as f:
+        pickle.dump(waypoints, f)
     return waypoints
