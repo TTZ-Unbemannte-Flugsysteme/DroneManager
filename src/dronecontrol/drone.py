@@ -682,10 +682,10 @@ class DroneMAVSDK(Drone):
         self._can_takeoff()
         result = await self._error_wrapper(self.system.action.takeoff, ActionError)
         if isinstance(result, Exception):
-            self.logger.warning("Couldn't takeoff!")
+            self.logger.warning("Takeoff denied!")
         while self.flightmode is not FlightMode.TAKEOFF:
             await asyncio.sleep(1 / self.position_update_rate)
-        self.logger.info("Taking off!")
+        self.logger.info(f"Taking off to {altitude}m over launch!")
         while self.flightmode is FlightMode.TAKEOFF:
             await asyncio.sleep(1 / self.position_update_rate)
         self.logger.info("Completed takeoff!")
@@ -706,7 +706,7 @@ class DroneMAVSDK(Drone):
         await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=target_pos_yaw[:3], yaw=target_pos_yaw[3]))
         if self._flightmode != FlightMode.OFFBOARD:
             await self.change_flight_mode("offboard")
-        self.logger.info("Taking off!")
+        self.logger.info(f"Taking off to {target_pos_yaw[2]} in local coordinates!")
         while True:
             if self.is_at_pos(target_pos_yaw, tolerance=tolerance):
                 self.logger.info(f"Takeoff completed!")

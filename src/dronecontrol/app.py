@@ -212,7 +212,9 @@ class CommandScreen(Screen):
 
         takeoff_parser = command_parsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
-        takeoff_parser.add_argument("-s", "--schedule", action="store_true",
+        takeoff_parser.add_argument("-a", "--altitude", type=float, required=False, default=2.0,
+                                    help="Takeoff altitude (positive is up)")
+        takeoff_parser.add_argument("-s", "--schedule", action="store_true", required=False,
                                     help="Queue this action instead of executing immediately.")
 
         flight_mode_parser = command_parsers.add_parser("mode", help="Change the drone(s) flight mode")
@@ -422,7 +424,7 @@ class CommandScreen(Screen):
             elif command == "disarm":
                 tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
             elif command == "takeoff":
-                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.takeoff(args.drones, altitude=args.altitude, schedule=args.schedule))
             elif command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
             elif command == "flyto":
