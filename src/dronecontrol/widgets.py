@@ -155,12 +155,12 @@ class DroneOverview(Static):
         return Text(string, style=f"bold {color}")
 
     def _text_armed(self):
-        color = "green" if self.drone.is_armed else "red"
+        color = "green" if self.drone.is_armed else "yellow"
         string = self.column_formats[1].format(f"Arm: {str(self.drone.is_armed):>{self.COLUMN_WIDTHS[1]-5}}")
         return Text(string, style=f"bold {color}")
 
     def _text_airborne(self):
-        color = "green" if self.drone.in_air else "red"
+        color = "green" if self.drone.in_air else "yellow"
         string = self.column_formats[1].format(f"Air: {str(self.drone.in_air):>{self.COLUMN_WIDTHS[1]-5}}")
         return Text(string, style=f"bold {color}")
 

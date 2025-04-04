@@ -178,8 +178,6 @@ class CommandScreen(Screen):
         for plugin_name in DEFAULT_PLUGINS:
             self.dm.load_plugin(plugin_name)
 
-
-
     def _base_parser(self):
         parser = ArgParser(description="Interactive command line interface to connect and control multiple drones")
         command_parsers = parser.add_subparsers(title="command", description="Command to execute.", dest="command")
@@ -214,7 +212,9 @@ class CommandScreen(Screen):
 
         takeoff_parser = command_parsers.add_parser("takeoff", help="Puts the drone(s) into takeoff mode.")
         takeoff_parser.add_argument("drones", type=str, nargs="+", help="Drone(s) to take off with.")
-        takeoff_parser.add_argument("-s", "--schedule", action="store_true",
+        takeoff_parser.add_argument("-a", "--altitude", type=float, required=False, default=2.0,
+                                    help="Takeoff altitude (positive is up)")
+        takeoff_parser.add_argument("-s", "--schedule", action="store_true", required=False,
                                     help="Queue this action instead of executing immediately.")
 
         flight_mode_parser = command_parsers.add_parser("mode", help="Change the drone(s) flight mode")
@@ -390,11 +390,13 @@ class CommandScreen(Screen):
 
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
-        value = message.value.lower()
+        value = message.value
         message.control.clear()
         tmp = None
         try:
-            args = self.parser.parse_args(shlex.split(value))
+            values = shlex.split(value)
+            values[0] = values[0].lower()
+            args = self.parser.parse_args(values)
         except ValueError as e:
             self.logger.warning(str(e))
             return
@@ -423,18 +425,19 @@ class CommandScreen(Screen):
             elif command == "disarm":
                 tmp = asyncio.create_task(self.dm.disarm(args.drones, schedule=args.schedule))
             elif command == "takeoff":
-                tmp = asyncio.create_task(self.dm.takeoff(args.drones, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.takeoff(args.drones, altitude=args.altitude, schedule=args.schedule))
             elif command == "mode":
                 tmp = asyncio.create_task(self.dm.change_flightmode(args.drones, args.mode))
             elif command == "flyto":
-                tmp = asyncio.create_task(self.dm.fly_to(args.drone, args.x, args.y, args.z, args.yaw,
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, local=[args.x, args.y, args.z], yaw=args.yaw,
                                                          tol=args.tolerance, schedule=args.schedule))
             elif command == "flytogps":
-                tmp = asyncio.create_task(self.dm.fly_to_gps(args.drone, args.lat, args.long, args.alt, args.yaw,
-                                                             tol=args.tolerance, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.fly_to(args.drone, gps=[args.lat, args.long, args.alt], yaw=args.yaw,
+                                                         tol=args.tolerance, schedule=args.schedule))
             elif command == "move":
-                tmp = asyncio.create_task(self.dm.move(args.drone, args.x, args.y, args.z, args.yaw, no_gps=args.nogps,
-                                                       tol=args.tolerance, schedule=args.schedule))
+                tmp = asyncio.create_task(self.dm.move(args.drone, [args.x, args.y, args.z], yaw=args.yaw,
+                                                       use_gps=not args.nogps, tol=args.tolerance,
+                                                       schedule=args.schedule))
             elif command == "land":
                 tmp = asyncio.create_task(self.dm.land(args.drones, schedule=args.schedule))
             elif command == "pause":
@@ -516,6 +519,8 @@ class CommandScreen(Screen):
                 self.logger.info("Exiting...")
                 await asyncio.sleep(1)  # Beauty pause
                 self.app.exit()
+            else:
+                self.logger.warning("Can't exit the app with armed drones!")
         except Exception as e:
             self.logger.error(repr(e), exc_info=True)
 

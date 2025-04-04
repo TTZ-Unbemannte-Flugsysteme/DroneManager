@@ -3,16 +3,18 @@ import datetime
 import os
 import socket
 import sys
+from collections.abc import Collection
 from asyncio.exceptions import TimeoutError, CancelledError
 
 from dronecontrol.drone import Drone, parse_address
 from dronecontrol.utils import common_formatter, get_free_port
-
-import logging
+from dronecontrol.navigation.core import Waypoint
 
 from dronecontrol.gimbal import GimbalPlugin
 from dronecontrol.scripts import ScriptsPlugin
 #from dronecontrol.formations import FormationsPlugin
+
+import logging
 
 # TODO: Plugin Discovery
 PLUGINS = {
@@ -36,12 +38,12 @@ DRONE_DICT = {
 
 
 class DroneManager:
-    # TODO: stop/close function that neatly ends all drone objects when not using app (app should also call this)
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
-    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a separate
-    #  function that awaits them and does error handling? Alternatively, the CLI function should do some final error catching somehow, maybe the same way?
+    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a
+    #  separate function that awaits them and does error handling? Alternatively, the CLI function should do some final
+    #  error catching somehow, maybe the same way?
 
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
@@ -115,7 +117,8 @@ class DroneManager:
                         return False
                 drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
                 try:
-                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id, component_id=self.component_id), timeout)
+                    connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
+                                                                     component_id=self.component_id), timeout)
                 except (CancelledError, TimeoutError, OSError, socket.gaierror, AssertionError) as e:
                     if isinstance(e, CancelledError):
                         self.logger.info(f"Aborting connection attempt to {name}")
@@ -177,23 +180,7 @@ class DroneManager:
                     self.logger.info(f"Disconnected {name}")
 
     async def _single_drone_action(self, action, name, start_string, *args, schedule=False, **kwargs):
-        try:
-            coro = action(self.drones[name], *args, **kwargs)
-            if schedule:
-                self.logger.info("Queuing action: " + start_string)
-                result = self.drones[name].schedule_task(coro)
-            else:
-                self.logger.info(start_string)
-                result = self.drones[name].execute_task(coro)
-            await result
-            if isinstance(result, Exception):
-                self.logger.error(f"Couldn't execute command due to: {str(result)}")
-            return result
-        except KeyError:
-            self.logger.warning(f"No drone named {name}!")
-        except Exception as e:
-            self.logger.error(repr(e))
-            self.logger.debug(repr(e), exc_info=True)
+        return await self._multiple_drone_action(action, [name], start_string, *args, schedule=schedule, **kwargs)
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
         try:
@@ -210,9 +197,55 @@ class DroneManager:
                     self.logger.error(f"Drone {names[i]} failed due to: {str(result)}")
             return results
         except KeyError:
-            self.logger.warning("No drones named {}!".format([name for name in names if name not in self.drones]))
+            self.logger.warning(f"No drones named {[name for name in names if name not in self.drones]}!")
         except Exception as e:
             self.logger.error(repr(e))
+            self.logger.debug(repr(e), exc_info=True)
+
+    async def _multiple_drone_multiple_params_action(self, action, names: str | Collection[str],
+                                                     start_string: str, *args,
+                                                     schedule: bool = False, **kwargs):
+        # If we only want to control a single drone, we allow "raw" arguments without an enclosing list or array as a
+        # convenience, i.e. fly_to("luke", [x, y, z]) instead of fly_to(["luke], [[x, y, z]])
+        try:
+            wrap_args = False
+            if isinstance(names, str):
+                wrap_args = True
+                names = [names]
+            n_drones = len(names)
+            # Assign args and kwargs to specific drones
+            drone_args = {name: [] for name in names}
+            drone_kwargs = {name: {} for name in names}
+            for arg in args:
+                if wrap_args:
+                    arg = [arg]
+                assert len(arg) == n_drones, "Size mismatch between an argument and the number of drones!"
+                for j, drone_arg in enumerate(arg):
+                    drone_args[names[j]].append(drone_arg)
+            for kwarg in kwargs:
+                value = kwargs[kwarg]
+                if wrap_args:
+                    value = [value]
+                assert len(value) == n_drones, "Size mismatch between an argument and the number of drones!"
+                for j, drone_value in enumerate(value):
+                    drone_kwargs[names[j]][kwarg] = drone_value
+
+            coros = [action(self.drones[name], *drone_args[name], **drone_kwargs[name]) for name in names]
+            if schedule:
+                self.logger.info("Queuing action: " + start_string.format(names))
+                results = [self.drones[name].schedule_task(coros[i]) for i, name in enumerate(names)]
+            else:
+                self.logger.info(start_string.format(names))
+                results = [self.drones[name].execute_task(coros[i]) for i, name in enumerate(names)]
+            results = await asyncio.gather(*results, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Drone {names[i]} failed due to: {repr(result)}")
+            return results
+        except KeyError:
+            self.logger.warning(f"No drones named {[name for name in names if name not in self.drones]}!")
+        except Exception as e:
+            self.logger.error("Encountered an exception! See the log for details.")
             self.logger.debug(repr(e), exc_info=True)
 
     async def arm(self, names, schedule=False):
@@ -247,24 +280,43 @@ class DroneManager:
         for name in names:
             self.drones[name].resume()
 
-    async def fly_to(self, name, x, y, z, yaw, tol=0.25, schedule=True):
-        await self._single_drone_action(self.drone_class.fly_to, name,
-                                        f"Flying to {x, y, z} with heading {yaw} and tolerance {tol}",
-                                        schedule=schedule,
-                                        x=x, y=y, z=z, yaw=yaw, tolerance=tol)
+    async def fly_to(self, names: str | list[str], local: Collection[float] | None = None,
+                     gps: Collection[float] | None = None, waypoint: list[Waypoint] | None = None,
+                     yaw: Collection[float] | float | None = None, tol: float | Collection[float] = 0.25, schedule=True):
+        assert local is not None or gps is not None or waypoint is not None, ("Must provide either waypoints, gps or "
+                                                                              "local coordinates!")
+        # Maybe allow for single args and then duplicate those for all drones?
+        n_drones = 1 if isinstance(names, str) else len(names)
+        if isinstance(tol, float) and n_drones > 1:
+            tol = [tol for _ in range(n_drones)]
+        return await self._multiple_drone_multiple_params_action(self.drone_class.fly_to, names,
+                                                                 f"Moving drones {names}", schedule=schedule,
+                                                                 tolerance=tol, local=local, gps=gps, waypoint=waypoint,
+                                                                 yaw=yaw)
 
-    async def fly_to_gps(self, name, lat, long, alt, yaw, tol=0.25, schedule=True):
-        await self._single_drone_action(self.drone_class.fly_to, name,
-                                        f"Flying to {lat, long, alt} with heading {yaw} and tolerance {tol}",
-                                        schedule=schedule,
-                                        lat=lat, long=long, amsl=alt, yaw=yaw, tolerance=tol)
+    async def move(self, names: str | list[str], offset: Collection[float], yaw: Collection[float] | float | None = None,
+                   use_gps: bool | Collection[bool] = True, tol: float | Collection[float] = 0.25,
+                   schedule: bool = True):
+        """ Move the drones by offsets meters from their current positions. Which coordinate system is used depends on
+        no_gps.
 
-    async def move(self, name, x, y, z, yaw, no_gps=False, tol=0.25, schedule=True):
-        await self._single_drone_action(self.drone_class.move, name,
-                                        f"Moving by {x, y, z} and heading {yaw} and tolerance {tol}",
-                                        x, y, z, yaw,
-                                        schedule=schedule,
-                                        use_gps=not no_gps, tolerance=tol)
+        :param names:
+        :param offset: An array with the offsets for the drones. Should contain the number of meters to move in NED.
+        :param yaw:
+        :param use_gps: If False, use the local coordinate system, otherwise use GPS.
+        :param tol:
+        :param schedule:
+        :return:
+        """
+        n_drones = 1 if isinstance(names, str) else len(names)
+        if isinstance(tol, float) and n_drones > 1:
+            tol = [tol for _ in range(n_drones)]
+        if isinstance(use_gps, bool) and n_drones > 1:
+            use_gps = [use_gps for _ in range(n_drones)]
+        await self._multiple_drone_multiple_params_action(self.drone_class.move, names,
+                                                          f"Moving drones {names}", offset,
+                                                          schedule=schedule, yaw=yaw, use_gps=use_gps,
+                                                          tolerance=tol)
 
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:

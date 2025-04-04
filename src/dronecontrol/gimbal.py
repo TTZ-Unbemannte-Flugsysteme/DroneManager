@@ -5,20 +5,21 @@ from typing import Dict
 from mavsdk.gimbal import GimbalError
 from mavsdk.gimbal import ControlMode as MAVControlMode
 from mavsdk.gimbal import GimbalMode as MAVGimbalMode
+from mavsdk.gimbal import SendMode as MAVSendMode
 
 from dronecontrol.plugins import Plugin
 from dronecontrol.utils import relative_gps
 
-
 # TODO: Multiple gimbals per drone
 # TODO: Log more
+# TODO: Rework
 
 ControlMode = MAVControlMode
 GimbalMode = MAVGimbalMode
+SendMode = MAVSendMode
 
 
 class GimbalPlugin(Plugin):
-    
     PREFIX = "gmbl"
 
     def __init__(self, dm, logger):
@@ -72,7 +73,12 @@ class GimbalPlugin(Plugin):
         await self.gimbals[drone].release_control()
 
     async def set_gimbal_angles(self, drone: str, roll: float, pitch: float, yaw: float):
-        return await self.gimbals[drone].set_gimbal_angles(roll, pitch, yaw)
+        try:
+            self.logger.debug(f"Setting gimbal angles for {drone} to {roll, pitch, yaw}")
+            return await self.gimbals[drone].set_gimbal_angles(roll, pitch, yaw)
+        except Exception as e:
+            self.logger.error("blurb")
+            self.logger.debug(repr(e), exc_info=True)
 
     async def point_gimbal_at(self, drone: str, x1: float, x2: float, x3: float, relative: bool = False):
         if relative:
@@ -126,12 +132,12 @@ class Gimbal:
     def log_status(self):
         self.logger.info(f"Gimbal control P:{self.primary_control}, S: {self.secondary_control}, Roll: {self.roll}, "
                          f"Pitch: {self.pitch}, Yaw: {self.yaw}")
-            
+
     async def take_control(self):
-        await self._error_wrapper(self.drone.system.gimbal.take_control, ControlMode.PRIMARY)
+        await self._error_wrapper(self.drone.system.gimbal.take_control, 0, ControlMode.PRIMARY)
 
     async def release_control(self):
-        await self._error_wrapper(self.drone.system.gimbal.release_control, ControlMode.PRIMARY)
+        await self._error_wrapper(self.drone.system.gimbal.release_control, 0)
 
     async def point_gimbal_at(self, lat, long, amsl):
         return await self._error_wrapper(self.drone.system.gimbal.set_roi_location, lat, long, amsl)
@@ -141,7 +147,8 @@ class Gimbal:
         return await self.point_gimbal_at(lat, long, amsl)
 
     async def set_gimbal_angles(self, roll, pitch, yaw):
-        await self._error_wrapper(self.drone.system.gimbal.set_angles, roll, pitch, yaw)
+        await self._error_wrapper(self.drone.system.gimbal.set_angles, 0, roll, pitch, yaw, GimbalMode.YAW_FOLLOW,
+                                  SendMode.ONCE)
 
     async def set_gimbal_mode(self, mode):
         assert mode in ["follow", "lock"]
@@ -154,6 +161,6 @@ class Gimbal:
         try:
             await func(*args, **kwargs)
         except GimbalError as e:
-            self.logger.error(e._result.result_str)
+            self.logger.error(f"GimbalError: {e._result.result_str}")
             return False
         return True
