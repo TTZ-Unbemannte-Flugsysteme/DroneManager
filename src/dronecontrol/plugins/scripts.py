@@ -1,12 +1,9 @@
 import asyncio
-import math
-from typing import Dict
 import os
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
 
-from dronecontrol.plugins import Plugin
-
+from dronecontrol.plugin import Plugin
 
 
 class ScriptsPlugin(Plugin):
@@ -35,7 +32,8 @@ class ScriptsPlugin(Plugin):
             return
         try:
             # Execute the script
-            with ProcessPoolExecutor(max_workers=2) as executor: result = await asyncio.get_running_loop().run_in_executor(executor, script_function, script_path)
+            with ProcessPoolExecutor(max_workers=2) as executor:
+                result = await asyncio.get_running_loop().run_in_executor(executor, script_function, script_path)
             self.logger.info(f"Script Output:\n{result.stdout}")
         except subprocess.CalledProcessError as e:
             self.logger.warning(f"Script execution failed: {e.stderr}")
@@ -43,9 +41,6 @@ class ScriptsPlugin(Plugin):
             self.logger.warning(f"Unexpected error: {repr(e)}")
 
 
-
 def script_function(script_path):
-    result = subprocess.run(
-    ["python3", script_path], capture_output=True, text=True, check=True
-)
+    result = subprocess.run(["python3", script_path], capture_output=True, text=True, check=True)
     return result
