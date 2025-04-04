@@ -1,8 +1,11 @@
 import asyncio
 import datetime
+import inspect
 import os
 import socket
 import sys
+from pathlib import Path
+import importlib
 from collections.abc import Collection
 from asyncio.exceptions import TimeoutError, CancelledError
 
@@ -10,18 +13,9 @@ from dronecontrol.drone import Drone, parse_address
 from dronecontrol.utils import common_formatter, get_free_port
 from dronecontrol.navigation.core import Waypoint
 
-from dronecontrol.gimbal import GimbalPlugin
-from dronecontrol.scripts import ScriptsPlugin
-#from dronecontrol.formations import FormationsPlugin
+from dronecontrol.plugin import Plugin
 
 import logging
-
-# TODO: Plugin Discovery
-PLUGINS = {
-    "gimbal": GimbalPlugin,
-    "scripts": ScriptsPlugin
-    #"formations": FormationsPlugin,
-}
 
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
@@ -41,9 +35,6 @@ class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
-    # TODO: Catch plugin command errors somehow: Maybe add a function that wraps all calls to plugin commands in a
-    #  separate function that awaits them and does error handling? Alternatively, the CLI function should do some final
-    #  error catching somehow, maybe the same way?
 
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
@@ -116,6 +107,7 @@ class DroneManager:
                         self.logger.warning(f"{other_name} is already connected to drone with address {drone_address}.")
                         return False
                 drone = self.drone_class(name, mavsdk_server_address, mavsdk_server_port)
+                connected = None
                 try:
                     connected = await asyncio.wait_for(drone.connect(drone_address, system_id=self.system_id,
                                                                      component_id=self.component_id), timeout)
@@ -388,7 +380,25 @@ class DroneManager:
 # PLUGINS ##############################################################################################################
 
     def plugin_options(self):
-        return PLUGINS.keys()
+        # Go through every file in plugins folder
+        _base_dir = Path(__file__).parent
+        _plugin_dir = _base_dir.joinpath("plugins")
+        modules = [name.stem for name in _plugin_dir.iterdir()
+                   if name.is_file() and name.suffix == ".py" and not name.stem.startswith("_")]
+        return modules
+
+    def _get_plugin_class(self, module) -> None | type:
+        try:
+            plugin_mod = importlib.import_module("." + module, "dronecontrol.plugins")
+            plugin_classes = [member[1] for member in inspect.getmembers(plugin_mod, inspect.isclass)
+                              if issubclass(member[1], Plugin)
+                              and not member[1] is Plugin]  # Strict subclass check
+            if len(plugin_classes) != 1:
+                return None
+            return plugin_classes[0]
+        except ImportError as e:
+            self.logger.error(f"Couldn't load plugin {module} due to a python import error!")
+            self.logger.debug(repr(e), exc_info=True)
 
     def currently_loaded_plugins(self):
         return self.plugins
@@ -400,29 +410,39 @@ class DroneManager:
         self._on_drone_connect_coros.add(func)
 
     async def load_plugin(self, plugin_name):
-        # TODO: Check to prevent collision between plugin name and existing attributes.
-        if plugin_name in self.plugins:
-            self.logger.warning(f"Plugin {plugin_name} already loaded!")
-            return False
-        if plugin_name not in PLUGINS:
-            self.logger.warning(f"No plugin '{plugin_name}' found!")
-            return False
-        self.logger.info(f"Loading plugin {plugin_name}...")
         try:
-            self.plugins.add(plugin_name)
-            plugin = PLUGINS[plugin_name](self, self.logger)
-            setattr(self, plugin_name, plugin)
-            await plugin.start()
+            if hasattr(self, plugin_name):
+                raise RuntimeError(f"Can't load plugin {plugin_name} due to possible name collision with an existing "
+                                   f"attribute! Rename the plugin.")
+            if plugin_name in self.plugins:
+                self.logger.warning(f"Plugin {plugin_name} already loaded!")
+                return False
+            if plugin_name not in self.plugin_options():
+                self.logger.warning(f"No plugin '{plugin_name}' found!")
+                return False
+            self.logger.info(f"Loading plugin {plugin_name}...")
+            try:
+                plugin_class = self._get_plugin_class(plugin_name)
+                if not plugin_class:
+                    self.logger.error(f"Module {plugin_name} contains no or multiple plugins, which is currently not "
+                                      f"supported!")
+                    return False
+                plugin = plugin_class(self, self.logger)
+                setattr(self, plugin_name, plugin)
+                self.plugins.add(plugin_name)
+                await plugin.start()
+            except Exception as e:
+                self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
+                self.logger.debug(repr(e), exc_info=True)
+                return False
+            self.logger.debug(f"Performing callbacks for plugin loading...")
+            for func in self._on_plugin_load_coros:
+                res = await asyncio.create_task(func(plugin_name, plugin))
+                if isinstance(res, Exception):
+                    self.logger.warning("Couldn't perform a callback for this plugin!")
+            self.logger.info(f"Completed loading Plugin {plugin_name}!")
         except Exception as e:
-            self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
-            self.logger.debug(repr(e), exc_info=True)
-            return False
-        self.logger.debug(f"Performing callbacks for plugin loading...")
-        for func in self._on_plugin_load_coros:
-            res = await asyncio.create_task(func(plugin_name, plugin))
-            if isinstance(res, Exception):
-                self.logger.warning("Couldn't perform a callback for this plugin!")
-        self.logger.info(f"Completed loading Plugin {plugin_name}!")
+            self.logger.error(repr(e), exc_info=True)
         return True
 
     async def unload_plugin(self, plugin_name):

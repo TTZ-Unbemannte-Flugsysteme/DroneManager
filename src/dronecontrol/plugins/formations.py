@@ -6,7 +6,7 @@ from collections import OrderedDict
 from abc import ABC, abstractmethod
 
 from dronecontrol.drone import Waypoint, WayPointType, Drone, TrajectoryFollower
-from dronecontrol.plugins import Plugin
+from dronecontrol.plugin import Plugin
 
 # TODO: How to do extra CLI commands for each version?
 

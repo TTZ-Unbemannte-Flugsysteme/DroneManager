@@ -35,7 +35,7 @@ DRONE_DICT = {
 UPDATE_RATE = 20  # How often the various screens update in Hz. TODO: Currently time delay after function, refactor to
 # ensure actual 20hz refresh rate
 
-DEFAULT_PLUGINS = [] #["gimbal"]
+DEFAULT_PLUGINS = []
 
 
 class StatusScreen(Screen):
@@ -177,6 +177,8 @@ class CommandScreen(Screen):
 
         for plugin_name in DEFAULT_PLUGINS:
             self.dm.load_plugin(plugin_name)
+
+        self._awaiter_tasks = set()
 
     def _base_parser(self):
         parser = ArgParser(description="Interactive command line interface to connect and control multiple drones")
@@ -388,6 +390,15 @@ class CommandScreen(Screen):
         except KeyError:
             pass
 
+    async def _cli_awaiter(self, task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(f"Encountered an exception in a coroutine! See the log for more details")
+            self.logger.debug(e, exc_info=True)
+
     @on(InputWithHistory.Submitted, "#cli")
     async def cli(self, message):
         value = message.value
@@ -485,6 +496,7 @@ class CommandScreen(Screen):
             elif command == "cam-zoom":
                 tmp = asyncio.create_task(self.dm.set_zoom(args.drone, args.zoom))
             self.running_tasks.add(tmp)
+            self._awaiter_tasks.add(asyncio.create_task(self._cli_awaiter(tmp)))
         except Exception as e:
             self.logger.error("Encountered an exception executing the CLI!")
             self.logger.debug(repr(e), exc_info=True)
@@ -515,7 +527,10 @@ class CommandScreen(Screen):
                 for task in self.running_tasks:
                     if isinstance(task, asyncio.Task):
                         task.cancel()
-                await asyncio.sleep(0.1)  # Beauty pause
+                for task in self._awaiter_tasks:
+                    if isinstance(task, asyncio.Task):
+                        task.cancel()
+                await asyncio.sleep(0.2)  # Beauty pause
                 self.logger.info("Exiting...")
                 await asyncio.sleep(1)  # Beauty pause
                 self.app.exit()

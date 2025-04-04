@@ -40,8 +40,7 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 #  be deactivated at all.
 # TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor any
 #  issues nicely
-# TODO: Add possibility for fly_to or other "do at" commands to accept waypoints
-# TODO: Follower discovery
+# TODO: Follower/generator manager system, similar to plugin system. Should probably break all out into their own thing
 
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType
