@@ -1,13 +1,12 @@
 import asyncio
 import math
-from typing import Dict
 
 from mavsdk.gimbal import GimbalError
 from mavsdk.gimbal import ControlMode as MAVControlMode
 from mavsdk.gimbal import GimbalMode as MAVGimbalMode
 from mavsdk.gimbal import SendMode as MAVSendMode
 
-from dronecontrol.plugins import Plugin
+from dronecontrol.plugin import Plugin
 from dronecontrol.utils import relative_gps
 
 # TODO: Multiple gimbals per drone
@@ -20,7 +19,7 @@ SendMode = MAVSendMode
 
 
 class GimbalPlugin(Plugin):
-    PREFIX = "gmbl"
+    PREFIX = "gimbal"
 
     def __init__(self, dm, logger):
         super().__init__(dm, logger)
@@ -29,14 +28,14 @@ class GimbalPlugin(Plugin):
             "remove": self.remove_gimbal,
             "control": self.take_control,
             "release": self.release_control,
-            "angles": self.set_gimbal_angles,
+            "set": self.set_gimbal_angles,
             "point": self.point_gimbal_at,
             "mode": self.set_gimbal_mode,
             "status": self.status,
         }
         self.background_functions = [
         ]
-        self.gimbals: Dict[str, Gimbal] = {}  # Dictionary with drone names as keys and gimbals as values
+        self.gimbals: dict[str, Gimbal] = {}  # Dictionary with drone names as keys and gimbals as values
         self.running_tasks = set()
 
     async def start(self):
@@ -46,6 +45,12 @@ class GimbalPlugin(Plugin):
         """ Removes all gimbals """
         coros = [self.remove_gimbal(drone) for drone in self.gimbals]
         await asyncio.gather(*coros)
+
+    def check_has_gimbal(self, drone):
+        if drone not in self.gimbals:
+            self.logger.warning(f"No drone with gimbal {drone}!")
+            return False
+        return True
 
     async def add_gimbals(self, drone: str):
         """ Add Gimbals from/for a given drone to the plugin"""
@@ -64,30 +69,36 @@ class GimbalPlugin(Plugin):
         del gimbal
 
     async def status(self, drone: str):
-        self.gimbals[drone].log_status()
+        if self.check_has_gimbal(drone):
+            self.gimbals[drone].log_status()
 
     async def take_control(self, drone: str):
-        await self.gimbals[drone].take_control()
+        if self.check_has_gimbal(drone):
+            await self.gimbals[drone].take_control()
 
     async def release_control(self, drone: str):
-        await self.gimbals[drone].release_control()
+        if self.check_has_gimbal(drone):
+            await self.gimbals[drone].release_control()
 
     async def set_gimbal_angles(self, drone: str, roll: float, pitch: float, yaw: float):
-        try:
-            self.logger.debug(f"Setting gimbal angles for {drone} to {roll, pitch, yaw}")
-            return await self.gimbals[drone].set_gimbal_angles(roll, pitch, yaw)
-        except Exception as e:
-            self.logger.error("blurb")
-            self.logger.debug(repr(e), exc_info=True)
+        if self.check_has_gimbal(drone):
+            try:
+                self.logger.debug(f"Setting gimbal angles for {drone} to {roll, pitch, yaw}")
+                return await self.gimbals[drone].set_gimbal_angles(roll, pitch, yaw)
+            except Exception as e:
+                self.logger.error("Couldn't set angles due to an exception!")
+                self.logger.debug(repr(e), exc_info=True)
 
     async def point_gimbal_at(self, drone: str, x1: float, x2: float, x3: float, relative: bool = False):
-        if relative:
-            return await self.gimbals[drone].point_gimbal_at_relative(x1, x2, x3)
-        else:
-            return await self.gimbals[drone].point_gimbal_at(x1, x2, x3)
+        if self.check_has_gimbal(drone):
+            if relative:
+                return await self.gimbals[drone].point_gimbal_at_relative(x1, x2, x3)
+            else:
+                return await self.gimbals[drone].point_gimbal_at(x1, x2, x3)
 
     async def set_gimbal_mode(self, drone: str, mode: str):
-        return await self.gimbals[drone].set_gimbal_mode(mode)
+        if self.check_has_gimbal(drone):
+            return await self.gimbals[drone].set_gimbal_mode(mode)
 
 
 class Gimbal:
