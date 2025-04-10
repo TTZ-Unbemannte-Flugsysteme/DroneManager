@@ -49,7 +49,7 @@ class MissionPlugin(Plugin):
             self.logger.error(f"Couldn't load mission {module} due to a python import error!")
             self.logger.debug(repr(e), exc_info=True)
 
-    async def load(self, mission_module, name):
+    async def load(self, mission_module: str, name: str):
         """ Load a new mission, which work like plugins with the name taking the role of the prefix.
 
         :return:
@@ -113,7 +113,12 @@ class Mission(Plugin, abc.ABC):
     def __init__(self, name, dm, logger):
         self.PREFIX = name
         super().__init__(dm, logger)
-        self.running_tasks = set()
+        self.cli_commands = {
+            "reset": self.reset,
+            "status": self.status,
+            "add": self.add_drones,
+            "remove": self.remove_drones,
+        }
 
     async def start(self):
         """ This function is called when the mission is loaded to start all the necessary processes asynchronously.
@@ -121,7 +126,7 @@ class Mission(Plugin, abc.ABC):
         pass
 
     async def close(self):
-        for task in self.running_tasks:
+        for task in self._running_tasks:
             if isinstance(task, asyncio.Task):
                 task.cancel()
 
@@ -135,4 +140,16 @@ class Mission(Plugin, abc.ABC):
     @abc.abstractmethod
     def status(self):
         """ Should write information about the current status of the mission to the logger under INFO."""
+        pass
+
+    @abc.abstractmethod
+    async def add_drones(self, names: list[str]):
+        """ Add drones to the mission. Implementations should check that the drones are capable and meet mission
+        requirements."""
+        pass
+
+    @abc.abstractmethod
+    async def remove_drones(self, names: list[str]):
+        """ Remove drones from the mission. Implementations must take measures to prevent missions from running with
+        too few drones"""
         pass
