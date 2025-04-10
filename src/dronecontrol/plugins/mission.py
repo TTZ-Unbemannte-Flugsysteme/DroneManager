@@ -8,7 +8,6 @@ from dronecontrol.plugin import Plugin
 
 
 class MissionPlugin(Plugin):
-
     PREFIX = "mission"
 
     def __init__(self, dm, logger):
@@ -17,7 +16,7 @@ class MissionPlugin(Plugin):
             "load": self.load,
             "status": self.status,
         }
-        self.missions: set[Mission] = {}
+        self.missions: dict[Mission] = {}
 
     async def start(self):
         pass
@@ -67,6 +66,7 @@ class MissionPlugin(Plugin):
                 self.logger.warning(f"No mission '{mission_module}' found!")
                 return False
             self.logger.info(f"Loading mission {mission_module} under name {name}...")
+            mission = None
             try:
                 plugin_class = self._get_mission_class(mission_module)
                 if not plugin_class:
@@ -85,7 +85,7 @@ class MissionPlugin(Plugin):
                 if hasattr(self.dm, name):
                     delattr(self.dm, name)
                 if name in self.missions:
-                    self.missions.remove(name)
+                    self.missions.pop(name)
                 return False
             self.logger.debug(f"Performing callbacks for plugin loading...")
             for func in self.dm._on_plugin_load_coros:
@@ -108,6 +108,7 @@ class MissionPlugin(Plugin):
 
 
 class Mission(Plugin, abc.ABC):
+    PREFIX = "YOUDIDSOMETHINGWRONG"
 
     def __init__(self, name, dm, logger):
         self.PREFIX = name
@@ -123,3 +124,15 @@ class Mission(Plugin, abc.ABC):
         for task in self.running_tasks:
             if isinstance(task, asyncio.Task):
                 task.cancel()
+
+    @abc.abstractmethod
+    async def reset(self):
+        """ Resets the mission back to the initial position.
+
+        Keep safety in mind when this requires moving drones."""
+        pass
+
+    @abc.abstractmethod
+    def status(self):
+        """ Should write information about the current status of the mission to the logger under INFO."""
+        pass
