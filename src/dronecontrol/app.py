@@ -392,7 +392,8 @@ class CommandScreen(Screen):
 
     async def _cli_awaiter(self, task):
         try:
-            await task
+            if isinstance(task, asyncio.Task):
+                await task
         except asyncio.CancelledError:
             pass
         except Exception as e:

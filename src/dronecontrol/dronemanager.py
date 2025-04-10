@@ -12,7 +12,6 @@ from asyncio.exceptions import TimeoutError, CancelledError
 from dronecontrol.drone import Drone, parse_address
 from dronecontrol.utils import common_formatter, get_free_port
 from dronecontrol.navigation.core import Waypoint
-
 from dronecontrol.plugin import Plugin
 
 import logging
@@ -421,6 +420,7 @@ class DroneManager:
                 self.logger.warning(f"No plugin '{plugin_name}' found!")
                 return False
             self.logger.info(f"Loading plugin {plugin_name}...")
+            plugin = None
             try:
                 plugin_class = self._get_plugin_class(plugin_name)
                 if not plugin_class:
@@ -434,6 +434,12 @@ class DroneManager:
             except Exception as e:
                 self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
                 self.logger.debug(repr(e), exc_info=True)
+                if plugin is not None:
+                    await plugin.close()
+                if hasattr(self, plugin_name):
+                    delattr(self, plugin_name)
+                if plugin_name in self.plugins:
+                    self.plugins.remove(plugin_name)
                 return False
             self.logger.debug(f"Performing callbacks for plugin loading...")
             for func in self._on_plugin_load_coros:
