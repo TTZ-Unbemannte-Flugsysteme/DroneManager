@@ -153,3 +153,9 @@ class Mission(Plugin, abc.ABC):
         """ Remove drones from the mission. Implementations must take measures to prevent missions from running with
         too few drones"""
         pass
+
+    @abc.abstractmethod
+    async def mission_ready(self, drone: str):
+        """ Check whether any given drone is ready to keep going, i.e. is still connected etc. """
+        pass
+    

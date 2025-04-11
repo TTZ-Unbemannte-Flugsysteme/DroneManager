@@ -107,17 +107,28 @@ class UAMMission(Mission):
             self.logger.debug(repr(e), exc_info=True)
             self.current_stage = UAMStages.Uninitialized
 
+    async def poi_found(self):
+        # TODO: All of it
+        # Choose a drone (prob. with the highest battery level) to keep at the point, send everything else back.
+        # Start in POI, end in observation
+        pass
+
     async def observation(self):
         # TODO: All of it
         # Do the observation stage, with battery swap and everything (Stage observation throughout). If there are more
         # drones at the observation point then necessary, this should send them back
         # This function should check if we are still in the observation state and return when we change state
+        # Observation drone should circle observation point, single
         assert self.ready()
         assert self.current_stage is UAMStages.POIFound
         self.current_stage = UAMStages.Observation
+        do_rtb = False
         try:
-            # Do the thing
-            pass
+            while not do_rtb:
+                # Do the thing
+                pass
+                if self.current_stage is UAMStages.Return:
+                    do_rtb = True
         except Exception as e:
             self.logger.error("Encountered an exception!")
             self.logger.debug(repr(e), exc_info=True)
@@ -143,6 +154,7 @@ class UAMMission(Mission):
         assert self.current_stage is UAMStages.Start
         try:
             await self.group_search()
+            await self.poi_found()
             await self.observation()
         except Exception as e:
             self.logger.error("Encountered an exception!")
@@ -173,3 +185,8 @@ class UAMMission(Mission):
                 self.drones.pop(name)
             except KeyError:
                 self.logger.warning(f"No drone named {name}")
+
+    def mission_ready(self, drone):
+        # TODO: All of it
+        # Check connection, appropriate mode
+        pass
