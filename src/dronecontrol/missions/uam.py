@@ -103,19 +103,22 @@ class UAMMission(Mission):
 
     async def _check_found_poi(self):
         # For each drone, check if we are within the search radius of the POI
-        # TODO: Better check: Not just distance but also facing of the drone. Optimally, at flight altitude
-        while self.current_stage is UAMStages.SearchSingle or self.current_stage is UAMStages.SearchGroup:
-            try:
-                for drone in self.drones:
-                    current_pos = self.dm.drones[drone].position_ned
-                    if dist_ned(current_pos, self.poi_position) < 0.75:
-                        self.found_poi = drone
-                        self.current_stage = UAMStages.POIFound
-            except asyncio.CancelledError:
-                self.logger.debug("Cancelling poi check function")
-            except Exception as e:
-                self.logger.error(f"The POI checker function encountered an exception!")
-                self.logger.debug(repr(e), exc_info=True)
+        # TODO: Implement a better check, instead of distance to POI, compute vision cone and check POI in it
+        while True:
+            while self.current_stage is UAMStages.SearchSingle or self.current_stage is UAMStages.SearchGroup:
+                try:
+                    for drone in self.drones:
+                        current_pos = self.dm.drones[drone].position_ned
+                        if dist_ned(current_pos, self.poi_position) < 0.75:
+                            self.found_poi = drone
+                            self.current_stage = UAMStages.POIFound
+                    await asyncio.sleep(1/self.update_rate)
+                except asyncio.CancelledError:
+                    self.logger.debug("Cancelling poi check function")
+                except Exception as e:
+                    self.logger.error(f"The POI checker function encountered an exception!")
+                    self.logger.debug(repr(e), exc_info=True)
+            await asyncio.sleep(1/self.update_rate)
 
     async def single_search(self):
         # Do the search pattern ( Stage SingleSearch. If we find POI -> Stage POIFound, else RTB)
@@ -278,6 +281,7 @@ class UAMMission(Mission):
 
     async def autonomous_search(self):
         # Do group search and automatically go into observation, but rtb still manually
+        # TODO: Do we still want this?
         assert self.ready()
         assert self.current_stage is UAMStages.Start
         try:
@@ -294,12 +298,12 @@ class UAMMission(Mission):
             if isinstance(task, asyncio.Task):
                 task.cancel()
         self.current_stage = UAMStages.Uninitialized
-        if len(self.drones) != self.n_drones_required:
-            self.logger.info("Not enough drones to start mission!")
-            return False
+        #if len(self.drones) != self.n_drones_required:
+        #    self.logger.info("Not enough drones to start mission!")
+        #    return False
         # Land all drones in case there are any in the air
         await asyncio.gather(*[self.dm.land([drone]) for drone in self.drones])
-        for i, drone in self.drones:
+        for i, drone in enumerate(self.drones):
             await self.dm.arm([drone])
             await self.dm.takeoff([drone], altitude=1)
             await self.dm.fly_to(drone, local=[self.start_position_x, self.start_positions_y[i], -self.flight_altitude],
