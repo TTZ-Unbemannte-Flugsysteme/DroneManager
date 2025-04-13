@@ -44,7 +44,7 @@ class UAMMission(Mission):
         self.current_stage = UAMStages.Uninitialized
         self.flight_area = [-3.75, 3.75, -1.75, 1.75, 2]
         self.search_space = [-3.5, 3.5, -1.5, 1.5]
-        self.start_positions_y = [-1.5, 0, 1.5]
+        self.start_positions_y = [-1.5, 0, 1.5]  # TODO: Make this dynamic somehow
         self.start_position_x = 3.5
         self.start_yaw = 180
         self.poi_position = [-2, -0.5]
@@ -148,7 +148,7 @@ class UAMMission(Mission):
                 await self.dm.fly_to(flying_drone,
                                      local=[x_pos_new, y_pos_new, -self.flight_altitude],
                                      yaw=side_yaw, tol=0.25, schedule=True)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             # Reached end of search pattern without finding POI, RTB
             self.current_stage = UAMStages.Return
         except asyncio.CancelledError:
@@ -188,14 +188,23 @@ class UAMMission(Mission):
             self.logger.debug(repr(e), exc_info=True)
 
     async def group_search(self):
-        # TODO: All of it
         # Do the search pattern (Stage group stage during, then go to POIFound)
         assert self.ready()
         assert self.current_stage is UAMStages.Start
         self.current_stage = UAMStages.SearchGroup
         try:
-            # Do the thing
-            self.current_stage = UAMStages.POIFound
+            await self.dm.arm(self.drones)
+            await self.dm.takeoff(self.drones)
+            # Do the pattern (i.e. just fly forward)
+            end_positions = []
+            for i, _ in enumerate(self.drones):
+                end_positions.append([self.search_space[0], self.start_positions_y[i], -self.flight_altitude])
+
+            coros = [self.dm.fly_to(drone, local=end_positions[i], yaw=180) for i, drone in enumerate(self.drones)]
+            await asyncio.gather(*coros)
+            await asyncio.sleep(3)
+            # Reached end of pattern without finding POI
+            self.current_stage = UAMStages.Return
         except Exception as e:
             self.logger.error("Encountered an exception!")
             self.logger.debug(repr(e), exc_info=True)
@@ -303,7 +312,6 @@ class UAMMission(Mission):
                          f"with drones {self.drones}. Ready: {self.ready()}")
 
     def ready(self):
-        # TODO: What else do we want to check here?
         drones_ready = all([self.mission_ready(drone) for drone in self.drones])
         return drones_ready and self.current_stage is not UAMStages.Uninitialized
 
