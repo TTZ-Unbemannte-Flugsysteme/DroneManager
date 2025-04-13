@@ -18,15 +18,13 @@ class MissionPlugin(Plugin):
         }
         self.missions: dict[Mission] = {}
 
-    async def start(self):
-        pass
-
     async def close(self):
         """ Stop all missions.
 
         :return:
         """
         await asyncio.gather(*[mission.close() for mission in self.missions])
+        await super().close()
 
     def mission_options(self):
         # Go through every file in plugins folder
@@ -122,13 +120,10 @@ class Mission(Plugin, abc.ABC):
 
     async def start(self):
         """ This function is called when the mission is loaded to start all the necessary processes asynchronously.
-        It is NOT a "start this mission" function."""
-        pass
 
-    async def close(self):
-        for task in self._running_tasks:
-            if isinstance(task, asyncio.Task):
-                task.cancel()
+        It is NOT a "start this mission" function. By default, launches any background processes, like starting a
+        plugin."""
+        await super().start()
 
     @abc.abstractmethod
     async def reset(self):

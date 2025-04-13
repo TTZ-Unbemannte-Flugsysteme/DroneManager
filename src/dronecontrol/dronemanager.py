@@ -34,6 +34,7 @@ class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
     # TODO: Better error handling for the multi_action tasks
     # TODO: Handle MAVSDK crashes
+    # TODO: Refactor functions other than fly_to to also use the wrapping convenience
 
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class

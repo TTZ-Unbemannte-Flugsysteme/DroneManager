@@ -18,9 +18,11 @@ class ScriptsPlugin(Plugin):
 
     async def start(self):
         self.logger.debug("Starting Script plugin...")
+        await super().start()
 
     async def close(self):
         self.logger.debug("Closing Script plugin...")
+        await super().close()
 
     async def execute_script(self, script_name: str):
         """ Run Script in ./Scripts with given Name"""
