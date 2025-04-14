@@ -38,10 +38,12 @@ class Plugin(ABC):
         for coro in self.background_functions:
             self._running_tasks.append(asyncio.create_task(coro))
 
-    @abstractmethod
     async def start(self):
-        pass
+        """ Starts any background functions."""
+        self.start_background_functions()
 
-    @abstractmethod
     async def close(self):
-        pass
+        """ Ends all running tasks functions."""
+        for task in self._running_tasks:
+            if isinstance(task, asyncio.Task):
+                task.cancel()
