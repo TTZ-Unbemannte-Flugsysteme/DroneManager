@@ -35,7 +35,7 @@ DRONE_DICT = {
 UPDATE_RATE = 20  # How often the various screens update in Hz. TODO: Currently time delay after function, refactor to
 # ensure actual 20hz refresh rate
 
-DEFAULT_PLUGINS = []
+DEFAULT_PLUGINS = ["mission"]
 
 
 class StatusScreen(Screen):
@@ -176,7 +176,7 @@ class CommandScreen(Screen):
         self.dm.add_plugin_unload_func(self._unload_plugin_commands)
 
         for plugin_name in DEFAULT_PLUGINS:
-            self.dm.load_plugin(plugin_name)
+            asyncio.create_task(self.dm.load_plugin(plugin_name))
 
         self._awaiter_tasks = set()
 

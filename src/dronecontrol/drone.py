@@ -1035,9 +1035,12 @@ class DroneMAVSDK(Drone):
             if self.trajectory_follower.is_active:
                 await self.trajectory_follower.deactivate()
             self.trajectory_follower.close()
-        if self.mav_conn:
-            await self.mav_conn.stop()
-            del self.mav_conn
+        try:
+            if self.mav_conn:
+                await self.mav_conn.stop()
+                del self.mav_conn
+        except AttributeError:
+            pass
         self.system.__del__()
         if self._server_process:
             self._server_process.terminate()

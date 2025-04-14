@@ -33,6 +33,7 @@ class UAMMission(Mission):
             "set": self.set_start,
             "singlesearch": self.single_search,
             "rtb": self.rtb,
+            "groupsearch": self.group_search,
         }
         self.cli_commands.update(mission_cli_commands)
         self.background_functions = [
@@ -190,7 +191,7 @@ class UAMMission(Mission):
                                                                                -self.flight_altitude],
                                                                         yaw=self.start_yaw,
                                                                         tol=0.25,
-                                                                        schedule=True)))
+                                                                        schedule=False)))
                     poi_tasks.append(asyncio.create_task(self.dm.land([drone], schedule=True)))
             await asyncio.gather(*poi_tasks)
             self.observing_drone = self.found_poi
@@ -210,8 +211,17 @@ class UAMMission(Mission):
         # Do the search pattern (Stage group stage during, then go to POIFound)
         assert self.ready()
         try:
-            await self.dm.arm(self.drones)
-            await self.dm.takeoff(self.drones, altitude=self.flight_altitude)
+            armed = await self.dm.arm(self.drones)
+            takeoff = [False]
+            if all(armed):
+                takeoff = await self.dm.takeoff(self.drones, altitude=self.flight_altitude)
+            if not (all(armed) and all(takeoff)):
+                self.logger.warning("Couldn't arm or takeoff with all drones! Stopping mission")
+                tasks = []
+                for drone in self.drones:
+                    tasks.append(asyncio.create_task(self.dm.land([drone], schedule=True)))
+                await asyncio.gather(*tasks)
+                return False
             # Do the pattern (i.e. just fly forward)
             end_positions = []
             for i, _ in enumerate(self.drones):
@@ -223,7 +233,7 @@ class UAMMission(Mission):
             # Reached end of pattern without finding POI
             self.current_stage = UAMStages.Return
         except Exception as e:
-            self.logger.error("Encountered an exception!")
+            self.logger.error("Encountered an exception in the group search function!")
             self.logger.debug(repr(e), exc_info=True)
             self.current_stage = UAMStages.Uninitialized
 
@@ -231,13 +241,14 @@ class UAMMission(Mission):
         # Do the observation stage, with battery swap and everything (Stage observation throughout).
         # There should already be one drone observing the POI, saved in self.observing_drone
         assert self.ready()
-        self.logger.info("Starting observation phase!")
+        self.logger.info("Starting long-term observation phase!")
         try:
             # Start circling the observation drone
             observe_task = asyncio.create_task(self._observation_circling(self.observing_drone))
             self.drone_tasks.add(observe_task)
             while True:
                 # TODO: Do the battery swap thing
+                # TODO: Dummy battery, do the swap every minute or so
                 await asyncio.sleep(1/self.update_rate)
         except Exception as e:
             self.logger.error("Encountered an exception!")
@@ -352,6 +363,7 @@ class UAMMission(Mission):
 
     async def add_drones(self, names: list[str]):
         self.logger.info(f"Adding drones {names} to mission!")
+        self.current_stage = UAMStages.Uninitialized
         if len(self.drones) + len(names) > self.n_drones_required:
             self.logger.warning(f"Can't add this many drones to this kind of mission! These missions require "
                                 f"exactly {self.n_drones_required} drones")
