@@ -16,19 +16,19 @@ class MissionPlugin(Plugin):
             "load": self.load,
             "status": self.status,
         }
-        self.missions: dict[Mission] = {}
+        self.missions: dict[str, Mission] = {}
 
     async def close(self):
         """ Stop all missions.
 
         :return:
         """
-        await asyncio.gather(*[mission.close() for mission in self.missions])
+        await asyncio.gather(*[mission.close() for mission in list(self.missions.values())])
         await super().close()
 
     def mission_options(self):
-        # Go through every file in plugins folder
-        _base_dir = Path(__file__).parent
+        # Go through every file in mission folder
+        _base_dir = Path(__file__).parent.parent
         _plugin_dir = _base_dir.joinpath("missions")
         modules = [name.stem for name in _plugin_dir.iterdir()
                    if name.is_file() and name.suffix == ".py" and not name.stem.startswith("_")]
@@ -47,12 +47,14 @@ class MissionPlugin(Plugin):
             self.logger.error(f"Couldn't load mission {module} due to a python import error!")
             self.logger.debug(repr(e), exc_info=True)
 
-    async def load(self, mission_module: str, name: str):
+    async def load(self, mission_module: str, name: str | None = None):
         """ Load a new mission, which work like plugins with the name taking the role of the prefix.
 
         :return:
         """
         try:
+            if name is None:
+                name = mission_module
             if hasattr(self.dm, name):
                 raise RuntimeError(
                     f"Can't load mission {mission_module} under {name} due to name collision with an existing "
@@ -98,8 +100,8 @@ class MissionPlugin(Plugin):
     async def status(self):
         """ Status of running missions and missions that could be loaded."""
         self.logger.info("Status of running missions:")
-        for mission in self.missions:
-            mission.status()
+        for mission in self.missions.values():
+            await mission.status()
         if len(self.missions) == 0:
             self.logger.info("No running missions!")
         self.logger.info(f"Available missions for loading: {self.mission_options()}")
@@ -125,6 +127,10 @@ class Mission(Plugin, abc.ABC):
         plugin."""
         await super().start()
 
+    async def close(self):
+        """ This function must end all running tasks"""
+        await super().close()
+
     @abc.abstractmethod
     async def reset(self):
         """ Resets the mission back to the initial position.
@@ -133,7 +139,7 @@ class Mission(Plugin, abc.ABC):
         pass
 
     @abc.abstractmethod
-    def status(self):
+    async def status(self):
         """ Should write information about the current status of the mission to the logger under INFO."""
         pass
 

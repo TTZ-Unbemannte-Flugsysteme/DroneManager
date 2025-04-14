@@ -535,6 +535,7 @@ class CommandScreen(Screen):
                 self.logger.info("Exiting...")
                 await asyncio.sleep(1)  # Beauty pause
                 self.app.exit()
+                await self.dm.close()
             else:
                 self.logger.warning("Can't exit the app with armed drones!")
         except Exception as e:

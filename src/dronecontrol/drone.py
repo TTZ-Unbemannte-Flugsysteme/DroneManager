@@ -746,7 +746,7 @@ class DroneMAVSDK(Drone):
             self.logger.warning(f"Couldn't change flight mode due to exception {repr(result)}")
             return False
         elif not result:
-            self.logger.warning("Couldn't change flight mode due to a programmatic impossibility!")
+            self.logger.warning("Flightmode change denied!")
             return False
         else:
             while self.flightmode != target_flight_mode and time.time() < start_time + timeout:

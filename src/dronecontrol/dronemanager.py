@@ -49,7 +49,7 @@ class DroneManager:
 
         self._on_plugin_load_coros = set()
         self._on_plugin_unload_coros = set()
-        self.plugins = set()
+        self.plugins: set[str] = set()
 
         self.system_id = 246
         self.component_id = 190
@@ -377,6 +377,10 @@ class DroneManager:
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
 
+    async def close(self):
+        for plugin in list(self.plugins):
+            await self.unload_plugin(plugin)
+
 # PLUGINS ##############################################################################################################
 
     def plugin_options(self):
@@ -391,8 +395,8 @@ class DroneManager:
         try:
             plugin_mod = importlib.import_module("." + module, "dronecontrol.plugins")
             plugin_classes = [member[1] for member in inspect.getmembers(plugin_mod, inspect.isclass)
-                              if issubclass(member[1], Plugin)
-                              and not member[1] is Plugin]  # Strict subclass check
+                              if issubclass(member[1], Plugin) and not member[1] is Plugin  # Strict subclass check
+                              and member[1].__name__.endswith("Plugin")]  # Only load plugins
             if len(plugin_classes) != 1:
                 return None
             return plugin_classes[0]
