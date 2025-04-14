@@ -158,4 +158,3 @@ class Mission(Plugin, abc.ABC):
     async def mission_ready(self, drone: str):
         """ Check whether any given drone is ready to keep going, i.e. is still connected etc. """
         pass
-    
