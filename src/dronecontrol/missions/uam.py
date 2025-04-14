@@ -8,8 +8,6 @@ from dronecontrol.plugins.mission import Mission
 from dronecontrol.utils import dist_ned
 from dronecontrol.navigation.core import Waypoint, WayPointType
 
-# TODO: Mission scripting (take from battery_swap.py)
-# TODO: Ensure mission plan matches flight area
 # TODO: Add fence to every drone (where has fence class gone?)
 # TODO: Take circling function and put it into drone orbit function
 
@@ -312,20 +310,6 @@ class UAMMission(Mission):
             tmp = asyncio.create_task(self.dm.fly_to(drone, local=[x_pos, y_pos, -self.flight_altitude],
                                                      yaw=target_yaw, schedule=False, tol=0.25))
             await asyncio.sleep(1/self.update_rate)
-
-    async def autonomous_search(self):
-        # Do group search and automatically go into observation, but rtb still manually
-        # TODO: Do we still want this?
-        assert self.ready()
-        assert self.current_stage is UAMStages.Start
-        try:
-            await self.group_search()
-            await self.poi_found()
-            await self.observation()
-        except Exception as e:
-            self.logger.error("Encountered an exception!")
-            self.logger.debug(repr(e), exc_info=True)
-            self.current_stage = UAMStages.Uninitialized
 
     async def reset(self):
         self.logger.info("Resetting drones to start positions.")
