@@ -857,7 +857,7 @@ class DroneMAVSDK(Drone):
             await asyncio.sleep(1/freq)
 
     async def fly_to(self, local: np.ndarray | None = None, gps: np.ndarray | None = None, yaw: float | None = None,
-                     waypoint: Waypoint | None = None, tolerance=0.25, put_into_offboard=True):
+                     waypoint: Waypoint | None = None, tolerance=0.25, put_into_offboard=True, log=True):
         """ Fly to a specified point in offboard mode. Uses trajectory generators and followers to get there.
 
         If multiple target are provided (for example GPS and local coordinates), we prefer coordinates in this fashion:
@@ -901,15 +901,17 @@ class DroneMAVSDK(Drone):
         use_gps = target.type == WayPointType.POS_GLOBAL
 
         if use_gps:
-            self.logger.info(f"Flying to Lat: {target.gps[0]} Long: {target.gps[1]} AMSL: {target.gps[2]} facing {yaw} "
-                             f"with tolerance {tolerance}")
+            if log:
+                self.logger.info(f"Flying to Lat: {target.gps[0]} Long: {target.gps[1]} AMSL: {target.gps[2]} "
+                                 f"facing {yaw} with tolerance {tolerance}")
             cur_lat, cur_long, cur_amsl = self.position_global
             cur_yaw = self.attitude[2]
             await self.set_setpoint(Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray([cur_lat, cur_long, cur_amsl]),
                                              yaw=cur_yaw))
         else:
-            self.logger.info(f"Flying to N: {target.pos[0]} E: {target.pos[1]} D: {target.pos[2]} facing {yaw} with "
-                             f"tolerance {tolerance}")
+            if log:
+                self.logger.info(f"Flying to N: {target.pos[0]} E: {target.pos[1]} D: {target.pos[2]} facing {yaw} "
+                                 f"with tolerance {tolerance}")
             cur_pos = self.position_ned
             cur_yaw = self.attitude[2]
             await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=cur_pos, yaw=cur_yaw))
