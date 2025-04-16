@@ -416,6 +416,9 @@ class CommandScreen(Screen):
             self.logger.error(f"Exception parsing the argument: ")
             self.logger.debug(repr(e), exc_info=True)
             return
+        except Exception as e:
+            self.logger.warning("Exception during argument parsing!")
+            self.logger.debug(repr(e), exc_info=True)
         try:
 
             command = args.command.lower()

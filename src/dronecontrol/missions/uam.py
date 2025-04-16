@@ -38,6 +38,11 @@ class FakeBattery:
 
 
 class UAMMission(Mission):
+    """ Multi-Stage mission for the UAM Demo 2025.
+
+    The demo consists of two stages:
+
+    """
 
     def __init__(self, name, dm, logger):
         super().__init__(name, dm, logger)
@@ -60,20 +65,20 @@ class UAMMission(Mission):
         self.n_drones_required = 3
         self.current_stage = UAMStages.Uninitialized
         self.flight_area = [-3.75, 3.75, -1.75, 1.75, 2]
-        self.search_space = [-3.5, 3.5, -1.5, 1.5]
-        self.start_positions_y = [-1.5, 0, 1.5]  # TODO: Make this dynamic somehow
-        self.start_position_x = 3.5
+        self.search_space = [-3, 3, -1, 1]
+        self.start_positions_y = [self.search_space[2], 0, self.search_space[3]]  # TODO: Make this dynamic somehow
+        self.start_position_x = 3.0
         self.start_yaw = 180
-        self.flight_altitude = 3  # in meters, positive for up
-        self.poi_position = [-2, -0.25, -self.flight_altitude]  # in NED
+        self.flight_altitude = 1  # in meters, positive for up
+        self.poi_position = [-2, -0.2, -self.flight_altitude]  # in NED, altitude is just for convenient distance check.
         self.update_rate = 5  # Mission state is checked and progressed this often per second.
 
         # SingleSearch Parameters
         self.single_search_forward_leg = 1  # in meters
 
         # Observation Stage Parameters
-        self.observation_diameter = 5  # in meters
-        self.circling_speed = 0.5  # in m/s
+        self.observation_diameter = 2  # in meters
+        self.circling_speed = 0.2  # in m/s
         self._circling_speed_angular = math.pi * 2 / (math.pi*self.observation_diameter / self.circling_speed)
         self._swap_altitude = 2  # The height that the drones will do the swap at.
 
@@ -294,7 +299,7 @@ class UAMMission(Mission):
             # Start circling the observation drone
             observe_task = asyncio.create_task(self._observation_circling(self.observing_drone))
             self.drone_tasks.add(observe_task)
-            while True:
+            while True:  # TODO: Do we want to do battery swap after single_search?
                 if self.batteries[self.observing_drone].battery_low:
                     self.logger.info("Observing drone battery going low!")
                     # Pick the drone back at base with the highest battery
