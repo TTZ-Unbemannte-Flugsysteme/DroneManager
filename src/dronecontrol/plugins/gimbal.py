@@ -36,13 +36,14 @@ class GimbalPlugin(Plugin):
         self.background_functions = [
         ]
         self.gimbals: dict[str, Gimbal] = {}  # Dictionary with drone names as keys and gimbals as values
-        self.running_tasks = set()
 
     async def start(self):
         self.logger.debug("Starting Gimbal plugin...")
+        await super().start()
 
     async def close(self):
         """ Removes all gimbals """
+        await super().close()
         coros = [self.remove_gimbal(drone) for drone in self.gimbals]
         await asyncio.gather(*coros)
 
@@ -112,16 +113,17 @@ class Gimbal:
         self.yaw = math.nan
         self.primary_control = (math.nan, math.nan)
         self.secondary_control = (math.nan, math.nan)
-        self.running_tasks = set()
+        self._running_tasks = set()
         self._start_background_tasks()
 
     def _start_background_tasks(self):
-        self.running_tasks.add(asyncio.create_task(self._check_gimbal_attitude()))
-        self.running_tasks.add(asyncio.create_task(self._check_gimbal_control()))
+        self._running_tasks.add(asyncio.create_task(self._check_gimbal_attitude()))
+        self._running_tasks.add(asyncio.create_task(self._check_gimbal_control()))
 
     async def close(self):
-        for task in self.running_tasks:
-            task.cancel()
+        for task in self._running_tasks:
+            if isinstance(task, asyncio.Task):
+                task.cancel()
 
     @property
     def in_control(self):

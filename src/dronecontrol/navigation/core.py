@@ -176,20 +176,20 @@ class TrajectoryFollower(ABC):
         self._following_task: asyncio.Coroutine | None = None
 
     def activate(self):
-        if self._active:
-            raise RuntimeWarning("Can't activate trajectory follower, it is already active.")
-        else:
+        if not self._active:
             self._active = True
             self._following_task = asyncio.create_task(self.follow())
+        else:
+            self.logger.debug("Can't activate trajectory follower, it is already active.")
 
     async def deactivate(self):
-        if not self._active:
-            raise RuntimeWarning("Can't deactivate trajectory follower, because it isn't active.")
-        else:
+        if self._active:
             self.logger.debug("Trajectory follower deactivating...")
             self._active = False
             await self._following_task
             self._following_task = None
+        else:
+            self.logger.debug("Can't deactivate trajectory follower, because it isn't active.")
 
     @property
     def is_active(self):

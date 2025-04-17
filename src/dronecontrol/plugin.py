@@ -4,7 +4,7 @@ Plugins extend the functionality of DroneManager or Drone Classes by providing e
 their own commands to the CLI.
 """
 import asyncio
-from abc import ABC, abstractmethod
+from abc import ABC
 
 
 # TODO: Figure out scheduling
@@ -32,16 +32,18 @@ class Plugin(ABC):
         self.logger = logger.getChild(self.__class__.__name__)
         self.cli_commands = {}
         self.background_functions = []
-        self._running_tasks = []
+        self._running_tasks = set()
 
     def start_background_functions(self):
         for coro in self.background_functions:
-            self._running_tasks.append(asyncio.create_task(coro))
+            self._running_tasks.add(asyncio.create_task(coro))
 
-    @abstractmethod
     async def start(self):
-        pass
+        """ Starts any background functions."""
+        self.start_background_functions()
 
-    @abstractmethod
     async def close(self):
-        pass
+        """ Ends all running tasks functions."""
+        for task in self._running_tasks:
+            if isinstance(task, asyncio.Task):
+                task.cancel()

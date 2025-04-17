@@ -35,7 +35,7 @@ DRONE_DICT = {
 UPDATE_RATE = 20  # How often the various screens update in Hz. TODO: Currently time delay after function, refactor to
 # ensure actual 20hz refresh rate
 
-DEFAULT_PLUGINS = []
+DEFAULT_PLUGINS = ["mission"]
 
 
 class StatusScreen(Screen):
@@ -176,7 +176,7 @@ class CommandScreen(Screen):
         self.dm.add_plugin_unload_func(self._unload_plugin_commands)
 
         for plugin_name in DEFAULT_PLUGINS:
-            self.dm.load_plugin(plugin_name)
+            asyncio.create_task(self.dm.load_plugin(plugin_name))
 
         self._awaiter_tasks = set()
 
@@ -334,6 +334,7 @@ class CommandScreen(Screen):
         rc_stage_parser = command_parsers.add_parser("rc-stage", help="Perform a stage with the current drones")
         rc_stage_parser.add_argument("stage", type=int,
                                      help="Which stage to execute. Must be consecutive to the previous stage")
+        
 
         return parser, command_parsers
 
@@ -415,6 +416,9 @@ class CommandScreen(Screen):
             self.logger.error(f"Exception parsing the argument: ")
             self.logger.debug(repr(e), exc_info=True)
             return
+        except Exception as e:
+            self.logger.warning("Exception during argument parsing!")
+            self.logger.debug(repr(e), exc_info=True)
         try:
 
             command = args.command.lower()
@@ -533,6 +537,7 @@ class CommandScreen(Screen):
                 await asyncio.sleep(0.2)  # Beauty pause
                 self.logger.info("Exiting...")
                 await asyncio.sleep(1)  # Beauty pause
+                await self.dm.close()
                 self.app.exit()
             else:
                 self.logger.warning("Can't exit the app with armed drones!")

@@ -32,8 +32,10 @@ DRONE_DICT = {
 
 class DroneManager:
     # TODO: Figure out how to get voxl values from the drone
-    # TODO: Better error handling for the multi_action tasks
-    # TODO: Handle MAVSDK crashes
+    # TODO: Handle MAVSDK crashes - Not sure at all what causes them
+    # TODO: Refactor functions other than fly_to to also use the list wrapping convenience
+    # TODO: Refactor the drone functions to be built dynamically from the droneclass, i.e. fly_to, move, yaw_to
+    # TODO: Also rebuild app to then dynamically build its CLI functions from the dronemanager functions.
 
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
@@ -48,7 +50,7 @@ class DroneManager:
 
         self._on_plugin_load_coros = set()
         self._on_plugin_unload_coros = set()
-        self.plugins = set()
+        self.plugins: set[str] = set()
 
         self.system_id = 246
         self.component_id = 190
@@ -271,7 +273,22 @@ class DroneManager:
         for name in names:
             self.drones[name].resume()
 
-    async def fly_to(self, names: str | list[str], local: Collection[float] | None = None,
+    async def yaw_to(self, names: str | Collection[str], yaw: Collection[float] | float,
+                     yaw_rate: Collection[float] | float | None = None, local: Collection[float] | None = None,
+                     tol: float | Collection[float] = 2, schedule: bool = True):
+        n_drones = 1 if isinstance(names, str) else len(names)
+        if isinstance(tol, float) and n_drones > 1:
+            tol = [tol for _ in range(n_drones)]
+        if isinstance(yaw, float) and n_drones > 1:
+            yaw = [yaw for _ in range(n_drones)]
+        if isinstance(yaw_rate, float) and n_drones > 1:
+            yaw_rate = [yaw_rate for _ in range(n_drones)]
+        return await self._multiple_drone_multiple_params_action(self.drone_class.yaw_to, names,
+                                                                 f"Yawing drones {names}", yaw,
+                                                                 schedule=schedule, yaw_rate=yaw_rate, tolerance=tol,
+                                                                 local=local)
+
+    async def fly_to(self, names: str | Collection[str], local: Collection[float] | None = None,
                      gps: Collection[float] | None = None, waypoint: list[Waypoint] | None = None,
                      yaw: Collection[float] | float | None = None, tol: float | Collection[float] = 0.25, schedule=True):
         assert local is not None or gps is not None or waypoint is not None, ("Must provide either waypoints, gps or "
@@ -285,7 +302,7 @@ class DroneManager:
                                                                  tolerance=tol, local=local, gps=gps, waypoint=waypoint,
                                                                  yaw=yaw)
 
-    async def move(self, names: str | list[str], offset: Collection[float], yaw: Collection[float] | float | None = None,
+    async def move(self, names: str | Collection[str], offset: Collection[float], yaw: Collection[float] | float | None = None,
                    use_gps: bool | Collection[bool] = True, tol: float | Collection[float] = 0.25,
                    schedule: bool = True):
         """ Move the drones by offsets meters from their current positions. Which coordinate system is used depends on
@@ -304,10 +321,15 @@ class DroneManager:
             tol = [tol for _ in range(n_drones)]
         if isinstance(use_gps, bool) and n_drones > 1:
             use_gps = [use_gps for _ in range(n_drones)]
-        await self._multiple_drone_multiple_params_action(self.drone_class.move, names,
-                                                          f"Moving drones {names}", offset,
-                                                          schedule=schedule, yaw=yaw, use_gps=use_gps,
-                                                          tolerance=tol)
+        return await self._multiple_drone_multiple_params_action(self.drone_class.move, names,
+                                                                 f"Moving drones {names}", offset,
+                                                                 schedule=schedule, yaw=yaw, use_gps=use_gps,
+                                                                 tolerance=tol)
+
+    async def wait(self, names: str | Collection[str], delay: float | Collection[float], schedule=True):
+        return await self._multiple_drone_multiple_params_action(self.drone_class.wait, names,
+                                                                 f"Drones {names} waiting", delay,
+                                                                 schedule=schedule)
 
     async def orbit(self, name, radius, velocity, center_lat, center_long, amsl):
         try:
@@ -376,6 +398,10 @@ class DroneManager:
     def add_connect_func(self, func):
         self._on_drone_connect_coros.add(func)
 
+    async def close(self):
+        for plugin in list(self.plugins):
+            await self.unload_plugin(plugin)
+
 # PLUGINS ##############################################################################################################
 
     def plugin_options(self):
@@ -390,8 +416,8 @@ class DroneManager:
         try:
             plugin_mod = importlib.import_module("." + module, "dronecontrol.plugins")
             plugin_classes = [member[1] for member in inspect.getmembers(plugin_mod, inspect.isclass)
-                              if issubclass(member[1], Plugin)
-                              and not member[1] is Plugin]  # Strict subclass check
+                              if issubclass(member[1], Plugin) and not member[1] is Plugin  # Strict subclass check
+                              and member[1].__name__.endswith("Plugin")]  # Only load plugins
             if len(plugin_classes) != 1:
                 return None
             return plugin_classes[0]
@@ -420,6 +446,7 @@ class DroneManager:
                 self.logger.warning(f"No plugin '{plugin_name}' found!")
                 return False
             self.logger.info(f"Loading plugin {plugin_name}...")
+            plugin = None
             try:
                 plugin_class = self._get_plugin_class(plugin_name)
                 if not plugin_class:
@@ -433,6 +460,12 @@ class DroneManager:
             except Exception as e:
                 self.logger.error(f"Couldn't load plugin {plugin_name} due to an exception!")
                 self.logger.debug(repr(e), exc_info=True)
+                if plugin is not None:
+                    await plugin.close()
+                if hasattr(self, plugin_name):
+                    delattr(self, plugin_name)
+                if plugin_name in self.plugins:
+                    self.plugins.remove(plugin_name)
                 return False
             self.logger.debug(f"Performing callbacks for plugin loading...")
             for func in self._on_plugin_load_coros:

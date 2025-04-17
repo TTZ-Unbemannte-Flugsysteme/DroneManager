@@ -149,13 +149,6 @@ class FormationsPlugin(Plugin):
         # TODO: Go through all available types and add their commands to this list as well
         # TODO: Figure out some way to show the user which commands are usable with with formation type
 
-    async def start(self):
-        pass
-
-    async def close(self):
-        # TODO
-        pass
-
     async def new_formation(self, name: str, formation_type: str):
         assert formation_type in self.available_types
         new_formation_type = self.available_types[formation_type]
