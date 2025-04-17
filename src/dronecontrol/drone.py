@@ -268,7 +268,7 @@ class Drone(ABC, threading.Thread):
         return False
 
     @abstractmethod
-    async def yaw_to(self, x, y, z, target_yaw, yaw_rate, tolerance) -> bool:
+    async def yaw_to(self, target_yaw, yaw_rate=30, local=None, tolerance=2):
         pass
 
     @abstractmethod
@@ -278,6 +278,12 @@ class Drone(ABC, threading.Thread):
     @abstractmethod
     async def set_setpoint(self, setpoint: "Waypoint") -> bool:
         pass
+
+    async def wait(self, delay: float):
+        """ Wait delay seconds.
+
+        This function is useful with scheduling to schedule short waits between moves."""
+        await asyncio.sleep(delay)
 
     @abstractmethod
     async def fly_to(self, local: np.ndarray | None = None, gps: np.ndarray | None = None, yaw: float | None = None,
@@ -799,16 +805,14 @@ class DroneMAVSDK(Drone):
             return False
         return True
 
-    async def yaw_to(self, x, y, z, target_yaw, yaw_rate=30, tolerance=2):
-        """ Move to the point x,y,z, yawing to the target heading as you do so at the specified rate.
+    async def yaw_to(self, target_yaw, yaw_rate=30, local=None, tolerance=2):
+        """Yawing to the target heading as you do so at the specified rate, maintaining current position.
 
-        To spin in place pass current position to x,y,z. Pausable.
+        Uses the local coordinate system for to determine and maintain position. Pausable.
 
-        :param x:
-        :param y:
-        :param z:
         :param target_yaw: Heading as a degree fom -180 to 180, right positive, 0 forward.
         :param yaw_rate:
+        :param local: Position setpoint during yaw.
         :param tolerance: How close we have to get to the heading before this function returns.
         :return:
         """
@@ -820,11 +824,12 @@ class DroneMAVSDK(Drone):
         time_required = abs(dif_yaw / yaw_rate)
         n_steps = math.ceil(time_required * self.position_update_rate)
         step_size = dif_yaw/n_steps
-        pos = np.asarray([x, y, z], dtype=float)
+        if local is None:
+            local = np.asarray(self.position_ned, dtype=float)
         for i in range(n_steps):
             if not self.is_paused:
                 yaw = og_yaw + step_size*(i+1)
-                await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=pos, yaw=yaw))
+                await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=local, yaw=yaw))
             await asyncio.sleep(1 / self.position_update_rate)
         while not self.is_at_heading(target_heading=target_yaw, tolerance=tolerance):
             await asyncio.sleep(1 / self.position_update_rate)
@@ -900,23 +905,24 @@ class DroneMAVSDK(Drone):
 
         use_gps = target.type == WayPointType.POS_GLOBAL
 
-        if use_gps:
-            if log:
+        if log:
+            if use_gps:
                 self.logger.info(f"Flying to Lat: {target.gps[0]} Long: {target.gps[1]} AMSL: {target.gps[2]} "
                                  f"facing {yaw} with tolerance {tolerance}")
-            cur_lat, cur_long, cur_amsl = self.position_global
-            cur_yaw = self.attitude[2]
-            await self.set_setpoint(Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray([cur_lat, cur_long, cur_amsl]),
-                                             yaw=cur_yaw))
-        else:
-            if log:
+            else:
                 self.logger.info(f"Flying to N: {target.pos[0]} E: {target.pos[1]} D: {target.pos[2]} facing {yaw} "
                                  f"with tolerance {tolerance}")
-            cur_pos = self.position_ned
-            cur_yaw = self.attitude[2]
-            await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=cur_pos, yaw=cur_yaw))
 
         if put_into_offboard and self._flightmode != FlightMode.OFFBOARD:
+            if use_gps:
+                cur_lat, cur_long, cur_amsl = self.position_global
+                cur_yaw = self.attitude[2]
+                await self.set_setpoint(Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray([cur_lat, cur_long, cur_amsl]),
+                                                 yaw=cur_yaw))
+            else:
+                cur_pos = self.position_ned
+                cur_yaw = self.attitude[2]
+                await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=cur_pos, yaw=cur_yaw))
             await self.change_flight_mode("offboard")
 
         if use_gps:
