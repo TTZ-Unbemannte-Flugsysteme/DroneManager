@@ -12,6 +12,7 @@ from dronecontrol.navigation.core import Waypoint, WayPointType
 
 # TODO: Add fence to every drone (where has fence class gone?)
 # TODO: Take circling function and put it into drone orbit function
+# TODO: Separate yaw and movement
 
 
 class UAMStages(enum.Enum):
@@ -299,7 +300,7 @@ class UAMMission(Mission):
             # Start circling the observation drone
             observe_task = asyncio.create_task(self._observation_circling(self.observing_drone))
             self.drone_tasks.add(observe_task)
-            while True:  # TODO: Do we want to do battery swap after single_search?
+            while True and len(self.drones) > 1:
                 if self.batteries[self.observing_drone].battery_low:
                     self.logger.info("Observing drone battery going low!")
                     # Pick the drone back at base with the highest battery
@@ -420,7 +421,7 @@ class UAMMission(Mission):
             dx = self.poi_position[0] - self.dm.drones[drone].position_ned[0]
             dy = self.poi_position[1] - self.dm.drones[drone].position_ned[1]
             start_theta = (math.atan2(dy, dx) + math.pi * 2) % (math.pi * 2)  # Do this in 0-2pi for easy modulo math
-            self.dm.drones[drone].trajectory_follower.deactivate()
+            await self.dm.drones[drone].trajectory_follower.deactivate()
             target_pos = np.zeros((3,))
             target_pos[2] = -self.flight_altitude
             while True:
