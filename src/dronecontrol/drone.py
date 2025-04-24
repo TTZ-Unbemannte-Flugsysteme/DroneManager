@@ -877,8 +877,8 @@ class DroneMAVSDK(Drone):
         :return:
         """
         # Check that we have one full set of coordinates and are in a flyable state
-        if not self._can_do_in_air_commands():
-            raise RuntimeError("Can't fly a landed or unarmed drone!")
+        #if not self._can_do_in_air_commands():
+        #    raise RuntimeError("Can't fly a landed or unarmed drone!")
         assert local is not None or gps is not None or waypoint is not None, \
             "Must provide a full set of either NED coordinates, GPS coordinates or a waypoint!"
 
