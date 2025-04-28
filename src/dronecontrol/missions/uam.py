@@ -71,14 +71,15 @@ class UAMMission(Mission):
         self.start_position_x = 3.0
         self.start_yaw = 180
         self.yaw_rate = 30
-        self.yaw_tolerance = 2  # In degrees
+        self.yaw_tolerance = 3  # In degrees
+        self.position_tolerance = 0.25  # In meters # TODO: Use consistently, currently not the case
         self.flight_altitude = 1  # in meters, positive for up
         self.poi_position = [-2, 0, -self.flight_altitude]  # in NED, altitude is just for convenient distance check.
         self.update_rate = 5  # Mission state is checked and progressed this often per second.
 
         # SingleSearch Parameters
         self.single_search_forward_leg = 1  # in meters
-        self.pause_between_moves = 1  # Wait after every yaw or move command, in seconds
+        self.pause_between_moves = 0.5  # Wait after every yaw or move command, in seconds
 
         # Observation Stage Parameters
         self.observation_diameter = 2  # in meters
@@ -93,10 +94,6 @@ class UAMMission(Mission):
 
         self.flying_drones = set()  # List of names
         self.batteries: dict[str, FakeBattery] = {}  # Dict with batteries for each drone. Will be drained while drones are flying
-
-        # TODO: Implement this: self.TESTING = False  # If true, none of the stage transitions happen automatically.
-        # TODO: Figure out some way of asking for "confirmation" of a step
-        # TODO: Reset battery somehow?
 
     async def _stage_managing_function(self):
         # Check the current stage every so often and cancel functions/start new functions when the stage changes
@@ -220,15 +217,15 @@ class UAMMission(Mission):
                                      yaw=-180, tol=0.25, schedule=False)
                 await asyncio.sleep(self.pause_between_moves)
                 # switch sides
-                await self.dm.yaw_to(flying_drone, yaw=side_yaw, yaw_rate=self.yaw_rate, tol=1, schedule=False,
-                                     local=[x_pos_new, y_pos_current, -self.flight_altitude])
+                await self.dm.yaw_to(flying_drone, yaw=side_yaw, yaw_rate=self.yaw_rate, tol=self.yaw_tolerance,
+                                     schedule=False, local=[x_pos_new, y_pos_current, -self.flight_altitude])
                 await asyncio.sleep(self.pause_between_moves)
                 await self.dm.fly_to(flying_drone,
                                      local=[x_pos_new, y_pos_new, -self.flight_altitude],
                                      yaw=side_yaw, tol=0.25, schedule=False)
                 await asyncio.sleep(self.pause_between_moves)
-                await self.dm.yaw_to(flying_drone, yaw=-180, yaw_rate=self.yaw_rate, tol=1, schedule=False,
-                                     local=[x_pos_new, y_pos_new, -self.flight_altitude])
+                await self.dm.yaw_to(flying_drone, yaw=-180, yaw_rate=self.yaw_rate, tol=self.yaw_tolerance,
+                                     schedule=False, local=[x_pos_new, y_pos_new, -self.flight_altitude])
                 await asyncio.sleep(self.pause_between_moves)
             await asyncio.sleep(3)
             self.logger.info("Reached end of search pattern without finding POI, RTB")
@@ -251,7 +248,6 @@ class UAMMission(Mission):
                 if drone == self.found_poi:
                     poi_tasks.append(asyncio.create_task(self._poi_task(drone)))
                 else:
-                    # TODO: Change altitude
                     poi_tasks.append(asyncio.create_task(self._drone_rtb(drone, self.start_positions_y[i],
                                                                          self._swap_altitude)))
             await asyncio.gather(*poi_tasks)
@@ -347,7 +343,7 @@ class UAMMission(Mission):
                                          schedule=False, tol=0.25)
                     # Yaw new drone to target
                     await self.dm.yaw_to(swap_drone, yaw=target_yaw, yaw_rate=self.yaw_rate, schedule=False,
-                                         local=[x_pos, y_pos, -self._swap_altitude])
+                                         local=[x_pos, y_pos, -self._swap_altitude], tol=self.yaw_tolerance)
                     # Lower new drone to observation altitude
                     await self.dm.fly_to(swap_drone, local=[x_pos, y_pos, -self.flight_altitude],
                                          schedule=False, tol=0.25)
@@ -423,7 +419,7 @@ class UAMMission(Mission):
         # then circle.
         theta = self._calculate_circle_angle(drone)
         x_pos, y_pos, target_yaw = self._calculate_xy_yaw(theta)
-        await self.dm.yaw_to(drone, yaw=target_yaw, yaw_rate=self.yaw_rate, schedule=False)
+        await self.dm.yaw_to(drone, yaw=target_yaw, yaw_rate=self.yaw_rate, schedule=False, tol=self.yaw_tolerance)
         await asyncio.sleep(self.pause_between_moves)
         await self.dm.fly_to(drone, local=[x_pos, y_pos, -self.flight_altitude], yaw=target_yaw, schedule=False,
                              tol=0.25)
@@ -482,11 +478,21 @@ class UAMMission(Mission):
         self.current_stage = UAMStages.Start
 
     async def _drone_rtb(self, drone, start_position_y, altitude):
-        # TODO: Compute heading so we yaw directly to start position
-        await self.dm.yaw_to(drone, yaw=0, yaw_rate=self.yaw_rate, schedule=False)
+        return_yaw = 0
+        dx = self.start_position_x - self.dm.drones[drone].position_ned[0]
+        dy = start_position_y - self.dm.drones[drone].position_ned[1]
+        theta = (math.atan2(-dy, -dx)) % (math.pi * 2)
+        return_yaw = ((theta + math.pi) % (math.pi * 2)) * 180 / math.pi  # Opposite angle in degrees
+        # Have to convert target yaw from 0-360 to -180-180
+        if return_yaw > 180:
+            return_yaw = return_yaw - 360
+        target_pos = self.dm.drones[drone].position_ned
+        target_pos[2] = -altitude
+        await self.dm.fly_to(drone, local=target_pos, schedule=False, tol=self.position_tolerance)
+        await self.dm.yaw_to(drone, yaw=return_yaw, yaw_rate=self.yaw_rate, schedule=False, tol=self.yaw_tolerance)
         await self.dm.fly_to(drone, local=[self.start_position_x, start_position_y, -altitude],
-                             yaw=0, tol=0.25, schedule=True)
-        await self.dm.yaw_to(drone, yaw=self.start_yaw, yaw_rate=self.yaw_rate, schedule=False)
+                             yaw=return_yaw, tol=self.position_tolerance, schedule=False)
+        await self.dm.yaw_to(drone, yaw=self.start_yaw, yaw_rate=self.yaw_rate, schedule=False, tol=self.yaw_tolerance)
         await self.dm.land([drone])
 
     async def set_start(self):
