@@ -71,8 +71,9 @@ class UAMMission(Mission):
         self.start_position_x = 3.0
         self.start_yaw = 180
         self.yaw_rate = 30
-        self.flight_altitude = 3  # in meters, positive for up
-        self.poi_position = [-2, -0.2, -self.flight_altitude]  # in NED, altitude is just for convenient distance check.
+        self.yaw_tolerance = 2  # In degrees
+        self.flight_altitude = 1  # in meters, positive for up
+        self.poi_position = [-2, 0, -self.flight_altitude]  # in NED, altitude is just for convenient distance check.
         self.update_rate = 5  # Mission state is checked and progressed this often per second.
 
         # SingleSearch Parameters
@@ -83,7 +84,7 @@ class UAMMission(Mission):
         self.observation_diameter = 2  # in meters
         self.circling_speed = 0.2  # in m/s
         self._circling_speed_angular = math.pi * 2 / (math.pi*self.observation_diameter / self.circling_speed)
-        self._swap_altitude = 4  # The height that the drones will do the swap at.
+        self._swap_altitude = 2  # The height that the drones will do the swap at.
 
         # Dynamic attributes, each stage must appropriate set these
         self.drone_tasks = set()  # Keeps track of all the stage functions
@@ -250,21 +251,9 @@ class UAMMission(Mission):
                 if drone == self.found_poi:
                     poi_tasks.append(asyncio.create_task(self._poi_task(drone)))
                 else:
-                    poi_tasks.append(asyncio.create_task(self.dm.yaw_to(drone, yaw=self.start_yaw,
-                                                                        yaw_rate=self.yaw_rate, tol=1,
-                                                                        schedule=False)))
-                    poi_tasks.append(asyncio.create_task(self.dm.wait(drone, delay=self.pause_between_moves,
-                                                                      schedule=True)))
-                    poi_tasks.append(asyncio.create_task(self.dm.fly_to(drone,
-                                                                        local=[self.start_position_x,
-                                                                               self.start_positions_y[i],
-                                                                               -self.flight_altitude],
-                                                                        yaw=self.start_yaw,
-                                                                        tol=0.25,
-                                                                        schedule=True)))
-                    poi_tasks.append(asyncio.create_task(self.dm.wait(drone, delay=self.pause_between_moves,
-                                                                      schedule=True)))
-                    poi_tasks.append(asyncio.create_task(self.dm.land([drone], schedule=True)))
+                    # TODO: Change altitude
+                    poi_tasks.append(asyncio.create_task(self._drone_rtb(drone, self.start_positions_y[i],
+                                                                         self._swap_altitude)))
             await asyncio.gather(*poi_tasks)
             self.flying_drones = {self.found_poi}
             self.observing_drone = self.found_poi
@@ -370,19 +359,11 @@ class UAMMission(Mission):
                             height_change_task = asyncio.create_task(self.dm.fly_to(self.observing_drone,
                                                                                     local=observ_cur_position,
                                                                                     schedule=True))
-                            yaw_task = asyncio.create_task(self.dm.yaw_to(self.observing_drone, yaw=self.start_yaw,
-                                                                          yaw_rate=self.yaw_rate, schedule=True))
-                            rtb_task = asyncio.create_task(self.dm.fly_to(self.observing_drone,
-                                                                          local=[self.start_position_x,
-                                                                                 self.start_positions_y[i],
-                                                                                 -self._swap_altitude],
-                                                                          yaw=self.start_yaw, tol=0.25,
-                                                                          schedule=True))
-                            land_task = asyncio.create_task(self.dm.land([self.observing_drone], schedule=True))
+                            rtb_task = asyncio.create_task(self._drone_rtb(self.observing_drone,
+                                                                           self.start_positions_y[i],
+                                                                           altitude=self._swap_altitude))
                             swap_tasks.append(height_change_task)
-                            swap_tasks.append(yaw_task)
                             swap_tasks.append(rtb_task)
-                            swap_tasks.append(land_task)
                     # Once old drone is back at base, update attributes, start circling new drone
                     await asyncio.gather(*swap_tasks)
                     self.flying_drones.remove(self.observing_drone)
@@ -412,14 +393,7 @@ class UAMMission(Mission):
             tasks = []
             for i, drone in enumerate(self.drones):
                 if drone in self.flying_drones:
-                    tasks.append(asyncio.create_task(self.dm.yaw_to(drone, yaw=self.start_yaw, yaw_rate=self.yaw_rate,
-                                                                    schedule=True)))
-                    tasks.append(asyncio.create_task(self.dm.fly_to(drone,
-                                                                    local=[self.start_position_x,
-                                                                           self.start_positions_y[i],
-                                                                           -self.flight_altitude],
-                                                                    yaw=self.start_yaw, tol=0.25, schedule=True)))
-                    tasks.append(asyncio.create_task(self.dm.land([drone], schedule=True)))
+                    tasks.append(self._drone_rtb(drone, self.start_positions_y[i], self.flight_altitude))
             await asyncio.gather(*tasks)
             self.flying_drones = set()
             self.current_stage = UAMStages.Start
@@ -504,10 +478,16 @@ class UAMMission(Mission):
         for i, drone in enumerate(self.drones):
             await self.dm.arm([drone])
             await self.dm.takeoff([drone], altitude=self.flight_altitude)
-            await self.dm.fly_to(drone, local=[self.start_position_x, self.start_positions_y[i], -self.flight_altitude],
-                                 yaw=self.start_yaw, tol=0.25, schedule=True)
-            await self.dm.land([drone])
+            await self._drone_rtb(drone, self.start_positions_y[i], self.flight_altitude)
         self.current_stage = UAMStages.Start
+
+    async def _drone_rtb(self, drone, start_position_y, altitude):
+        # TODO: Compute heading so we yaw directly to start position
+        await self.dm.yaw_to(drone, yaw=0, yaw_rate=self.yaw_rate, schedule=False)
+        await self.dm.fly_to(drone, local=[self.start_position_x, start_position_y, -altitude],
+                             yaw=0, tol=0.25, schedule=True)
+        await self.dm.yaw_to(drone, yaw=self.start_yaw, yaw_rate=self.yaw_rate, schedule=False)
+        await self.dm.land([drone])
 
     async def set_start(self):
         """ Set the current stage to the start stage.
