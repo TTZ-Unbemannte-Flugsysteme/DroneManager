@@ -582,8 +582,9 @@ class DroneMAVSDK(Drone):
             self._velocity[0] = pos_vel.velocity.north_m_s
             self._velocity[1] = pos_vel.velocity.east_m_s
             self._velocity[2] = pos_vel.velocity.down_m_s
-            new_pos = np.array([pos_vel.position.north_m, pos_vel.position.east_m, pos_vel.position.down_m])
-            self._position_ned = new_pos
+            self._position_ned[0] = pos_vel.position.north_m
+            self._position_ned[1] = pos_vel.position.east_m
+            self._position_ned[2] = pos_vel.position.down_m
 
     async def _att_check(self):
         async for att in self.system.telemetry.attitude_euler():
