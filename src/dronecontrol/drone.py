@@ -386,7 +386,7 @@ class DroneMAVSDK(Drone):
         # planning algorithms for their time resolution.
         self.position_update_rate = 5
 
-        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
+        self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=False)
         self.trajectory_generator = DirectTargetGenerator(self, self.logger, WayPointType.POS_NED)
         self.trajectory_follower = DirectSetpointFollower(self, self.logger, 1/self.position_update_rate,
                                                           WayPointType.POS_VEL_NED)

@@ -1,6 +1,7 @@
 import asyncio
 import enum
 import collections
+from queue import PriorityQueue
 import math
 import time
 
@@ -52,6 +53,7 @@ class UAMMission(Mission):
         mission_cli_commands = {
             "reset": self.reset,
             "set": self.set_start,
+            "unset": self.set_uninit,
             "singlesearch": self.single_search,
             "rtb": self.rtb,
             "groupsearch": self.group_search,
@@ -63,17 +65,17 @@ class UAMMission(Mission):
         ]
 
         # Static parameters for mission definition
-        self.n_drones_required = 3
+        self.n_drones_max = 3
         self.current_stage = UAMStages.Uninitialized
         self.flight_area = [-3.75, 3.75, -1.75, 1.75, 2]
         self.search_space = [-3, 3, -1, 1]
-        self.start_positions_y = [self.search_space[2], 0, self.search_space[3]]  # TODO: Make this dynamic somehow
+        self.start_positions_y = None
         self.start_position_x = 3.0
         self.start_yaw = 180
         self.yaw_rate = 30
         self.yaw_tolerance = 3  # In degrees
-        self.position_tolerance = 0.25  # In meters # TODO: Use consistently, currently not the case
-        self.flight_altitude = 1  # in meters, positive for up
+        self.position_tolerance = 0.25  # In meters
+        self.flight_altitude = 3  # in meters, positive for up
         self.poi_position = [-2, 0, -self.flight_altitude]  # in NED, altitude is just for convenient distance check.
         self.update_rate = 5  # Mission state is checked and progressed this often per second.
 
@@ -87,6 +89,7 @@ class UAMMission(Mission):
         self._circling_speed_angular = math.pi * 2 / (math.pi*self.observation_diameter / self.circling_speed)
         self._swap_altitude = 2  # The height that the drones will do the swap at.
         self.do_swap = False  # If we do the swap or not
+        self.POI_distance = 2  # Distance from drone to POI to be considered "outside" the observation area
 
         # Dynamic attributes, each stage must appropriate set these
         self.drone_tasks = set()  # Keeps track of all the stage functions
@@ -103,6 +106,7 @@ class UAMMission(Mission):
         n_steps = 0
         while True:
             try:
+                # If we have swapped stage, cancel old tasks and start new ones
                 if self.current_stage is not old_stage:
                     # Cancel all current drone tasks
                     for task in self.drone_tasks:
@@ -126,6 +130,9 @@ class UAMMission(Mission):
                     elif self.current_stage is UAMStages.SearchGroup:
                         new_tasks.add(asyncio.create_task(self._group_search()))
                         new_tasks.add(asyncio.create_task(self._check_found_poi()))
+                    elif self.current_stage is UAMStages.Start:
+                        # Compute whatever attributes that depend on the number of drones available.
+                        self._init_variables()
                     self.drone_tasks.update(new_tasks)
                     self._running_tasks.update(new_tasks)
                     old_stage = self.current_stage
@@ -141,6 +148,10 @@ class UAMMission(Mission):
                 self.logger.error("Stage managing function encountered an exception!")
                 self.logger.debug(repr(e), exc_info=True)
 
+    def _init_variables(self):
+        self.start_positions_y = np.linspace(start=self.search_space[2], stop=self.search_space[3],
+                                             num=len(self.drones))
+
     async def _battery_drainer(self):
         while True:
             try:
@@ -152,7 +163,7 @@ class UAMMission(Mission):
                         if battery.level < battery.critical_level / 2:
                             battery.level = battery.critical_level / 2
                     else:
-                        self.batteries[drone_name].level = 1.0
+                        self.batteries[drone_name].level += 1 / FakeBattery.TIME_SCALE / self.update_rate / 2
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -216,7 +227,7 @@ class UAMMission(Mission):
                 # fly forward
                 await self.dm.fly_to(flying_drone,
                                      local=[x_pos_new, y_pos_current, -self.flight_altitude],
-                                     yaw=-180, tol=0.25, schedule=False)
+                                     yaw=-180, tol=self.position_tolerance, schedule=False)
                 await asyncio.sleep(self.pause_between_moves)
                 # switch sides
                 await self.dm.yaw_to(flying_drone, yaw=side_yaw, yaw_rate=self.yaw_rate, tol=self.yaw_tolerance,
@@ -224,7 +235,7 @@ class UAMMission(Mission):
                 await asyncio.sleep(self.pause_between_moves)
                 await self.dm.fly_to(flying_drone,
                                      local=[x_pos_new, y_pos_new, -self.flight_altitude],
-                                     yaw=side_yaw, tol=0.25, schedule=False)
+                                     yaw=side_yaw, tol=self.position_tolerance, schedule=False)
                 await asyncio.sleep(self.pause_between_moves)
                 await self.dm.yaw_to(flying_drone, yaw=-180, yaw_rate=self.yaw_rate, tol=self.yaw_tolerance,
                                      schedule=False, local=[x_pos_new, y_pos_new, -self.flight_altitude])
@@ -264,6 +275,7 @@ class UAMMission(Mission):
                 for drone in self.drones:
                     tasks.append(asyncio.create_task(self.dm.land([drone], schedule=True)))
                 await asyncio.gather(*tasks)
+                self.current_stage = UAMStages.Uninitialized
                 return False
 
             # Do the pattern (i.e. just fly forward)
@@ -271,7 +283,8 @@ class UAMMission(Mission):
             for i, _ in enumerate(self.drones):
                 end_positions.append([self.search_space[0], self.start_positions_y[i], -self.flight_altitude])
 
-            coros = [self.dm.fly_to(drone, local=end_positions[i], yaw=180) for i, drone in enumerate(self.drones)]
+            coros = [self.dm.fly_to(drone, local=end_positions[i], tol=self.position_tolerance, yaw=180)
+                     for i, drone in enumerate(self.drones)]
             await asyncio.gather(*coros)
             await asyncio.sleep(3)
             # Reached end of pattern without finding POI
@@ -288,7 +301,9 @@ class UAMMission(Mission):
         # We approach the circle by flying directly to the closest point on it, while pointing at it.
         poi_tasks = []
         try:
-            for i, drone in enumerate(self.flying_drones):
+            for i, drone in enumerate(self.drones):
+                if drone not in self.flying_drones:
+                    continue
                 if drone == self.found_poi:
                     poi_tasks.append(asyncio.create_task(self._poi_task(drone)))
                 else:
@@ -305,6 +320,14 @@ class UAMMission(Mission):
             self.logger.error("An exception occurred in the POI function!")
             self.logger.debug(repr(e), exc_info=True)
 
+    def _check_distance_to_poi(self, drones: str | list[str]):
+        if isinstance(drones, str):
+            drones = [drones]
+        for drone in drones:
+            if dist_ned(self.dm.drones[drone].position_ned, self.poi_position) < self.POI_distance:
+                return False
+        return True
+
     async def _poi_task(self, drone):
         # Fly to POI and start circling
         # First we slow down, by sending the current position + vel/2 as setpoint
@@ -320,7 +343,7 @@ class UAMMission(Mission):
             target_pos[1] = self.search_space[2]
         elif target_pos[1] > self.search_space[3]:
             target_pos[1] = self.search_space[3]
-        await self.dm.fly_to(drone, local=target_pos, schedule=False)
+        await self.dm.fly_to(drone, local=target_pos, schedule=False, tol=self.position_tolerance)
         # Determine vector from POI center to drone, send drone to that point, wait short beauty pause,
         # then circle.
         theta = self._calculate_circle_angle(drone)
@@ -328,9 +351,12 @@ class UAMMission(Mission):
         await self.dm.yaw_to(drone, yaw=target_yaw, yaw_rate=self.yaw_rate, schedule=False, tol=self.yaw_tolerance)
         await asyncio.sleep(self.pause_between_moves)
         await self.dm.fly_to(drone, local=[x_pos, y_pos, -self.flight_altitude], yaw=target_yaw, schedule=False,
-                             tol=0.25)
-        # Beauty Pause
-        await asyncio.sleep(1)
+                             tol=self.position_tolerance)
+        # Wait for other drones to be away from POI before circling
+        other_drones = list(self.drones.keys())
+        other_drones.remove(drone)
+        while not self._check_distance_to_poi(other_drones):
+            await asyncio.sleep(1 / self.update_rate)
         # Start circling: Have to add this to drone_tasks, so it gets cancelled and replaced with the proper obs task
         circle_task = self._observation_circling(drone)
         self.drone_tasks.add(asyncio.create_task(circle_task))
@@ -348,22 +374,31 @@ class UAMMission(Mission):
                 if self.batteries[self.observing_drone].battery_low:
                     self.logger.info("Observing drone battery going low!")
                     # Pick the drone back at base with the highest battery
-                    max_battery = -1
-                    drone_with_max_battery = None
+                    drones_by_batterlevel = PriorityQueue()
                     for drone in self.drones:
                         if drone == self.observing_drone:
                             continue
-                        if self.batteries[drone].level > max_battery:
-                            max_battery = self.batteries[drone].level
-                            drone_with_max_battery = drone
-                    swap_drone = drone_with_max_battery
-                    # Launch the new drone
-                    await self.dm.arm([swap_drone])
-                    # TODO: What to do if the drone doesn't arm?
-                    await self.dm.takeoff([swap_drone], altitude=self._swap_altitude)
+                        drones_by_batterlevel.put((self.batteries[drone].level, drone))
+                    swap_drone = None
+                    while not swap_drone:
+                        bat_level, candidate = drones_by_batterlevel.get()
+                        self.logger.info(f"Trying to do swap with {candidate}")
+                        # Launch the new drone
+                        armed = await self.dm.arm([candidate])
+                        if armed:
+                            takeoff = await self.dm.takeoff([candidate], altitude=self._swap_altitude)
+                            if takeoff:
+                                swap_drone = candidate
+                            else:
+                                await self.dm.disarm([candidate])
+
                     self.flying_drones.add(swap_drone)
 
                     swap_tasks = []
+                    # TODO: New procedure: Fly swap drone to holding area while observing drone keeps circling. Once
+                    #  observing drone reaches DEPARTURE_ANGLE, observing drone stops circling, swap_drone flies to
+                    #  ARRIVAL_ANGLE and yaws to POI and observing drone departs. Once observing is some distance away,
+                    #  start circling swap drone and change labels.
                     # Stop the circling of the observing drone, send the new drone to the point opposite the circle.
                     observe_task.cancel()
                     #observ_stop = asyncio.create_task(self.dm.fly_to(self.observing_drone, local=observ_cur_position))
@@ -373,25 +408,19 @@ class UAMMission(Mission):
                     new_theta = (current_theta + math.pi) % (math.pi * 2)  # Angle of current drone + pi
                     x_pos, y_pos, target_yaw = self._calculate_xy_yaw(new_theta)
                     await self.dm.fly_to(swap_drone, local=[x_pos, y_pos, -self._swap_altitude],
-                                         schedule=False, tol=0.25)
+                                         schedule=False, tol=self.position_tolerance)
                     # Yaw new drone to target
                     await self.dm.yaw_to(swap_drone, yaw=target_yaw, yaw_rate=self.yaw_rate, schedule=False,
                                          local=[x_pos, y_pos, -self._swap_altitude], tol=self.yaw_tolerance)
                     # Lower new drone to observation altitude
                     await self.dm.fly_to(swap_drone, local=[x_pos, y_pos, -self.flight_altitude],
-                                         schedule=False, tol=0.25)
+                                         schedule=False, tol=self.position_tolerance)
                     # New drone has arrived, send old drone back to base
                     for i, drone in enumerate(self.drones):
                         if drone == self.observing_drone:
-                            observ_cur_position = self.dm.drones[self.observing_drone].position_ned
-                            observ_cur_position[2] = -self._swap_altitude
-                            height_change_task = asyncio.create_task(self.dm.fly_to(self.observing_drone,
-                                                                                    local=observ_cur_position,
-                                                                                    schedule=True))
                             rtb_task = asyncio.create_task(self._drone_rtb(self.observing_drone,
                                                                            self.start_positions_y[i],
                                                                            altitude=self._swap_altitude))
-                            swap_tasks.append(height_change_task)
                             swap_tasks.append(rtb_task)
                     # Once old drone is back at base, update attributes, start circling new drone
                     await asyncio.gather(*swap_tasks)
@@ -505,11 +534,13 @@ class UAMMission(Mission):
         self.logger.info("Landing all drones")
         await asyncio.gather(*[self.dm.land([drone]) for drone in self.drones])
         self.logger.info("Flying all drones to start positions")
-        # TODO: Determine if drones are already at start position and leave them
         for i, drone in enumerate(self.drones):
-            await self.dm.arm([drone])
-            await self.dm.takeoff([drone], altitude=self.flight_altitude)
-            await self._drone_rtb(drone, self.start_positions_y[i], self.flight_altitude)
+            # Doesn't work in gazebo because of horrendous position noise and awful flight behaviour
+            if not self.dm.drones[drone].is_at_pos([self.start_position_x, self.start_positions_y[i], 0],
+                                                   tolerance=self.position_tolerance):
+                await self.dm.arm([drone])
+                await self.dm.takeoff([drone], altitude=self.flight_altitude)
+                await self._drone_rtb(drone, self.start_positions_y[i], self.flight_altitude)
         self.current_stage = UAMStages.Start
 
     async def set_start(self):
@@ -518,6 +549,15 @@ class UAMMission(Mission):
         This should be called/used when the drones are all setup at their starting positions already."""
         self.logger.info("Set to Start stage!")
         self.current_stage = UAMStages.Start
+
+    async def set_uninit(self):
+        """ Set the current stage to Uninitialized.
+
+        This function is only useful on a CLI to be able to reset without moving any drones. Some computations are
+        performed when the "Start" stage is entered. Setting to Uninitialized and back allows reperforming these.
+        """
+        self.logger.info("Set to Uninitialized stage!")
+        self.current_stage = UAMStages.Uninitialized
 
     async def status(self):
         self.logger.info(f"Mission {self.PREFIX} of type {self.__class__.__name__}: In stage {self.current_stage.name} "
@@ -530,9 +570,9 @@ class UAMMission(Mission):
     async def add_drones(self, names: list[str]):
         self.logger.info(f"Adding drones {names} to mission!")
         self.current_stage = UAMStages.Uninitialized
-        if len(self.drones) + len(names) > self.n_drones_required:
-            self.logger.warning(f"Can't add this many drones to this kind of mission! These missions require "
-                                f"exactly {self.n_drones_required} drones")
+        if len(self.drones) + len(names) > self.n_drones_max:
+            self.logger.warning(f"Can't add this many drones to this kind of mission! These missions allow for at most "
+                                f"{self.n_drones_max} drones")
             return False
         for name in names:
             try:
@@ -540,6 +580,8 @@ class UAMMission(Mission):
                 self.batteries[name] = FakeBattery()
             except KeyError:
                 self.logger.error(f"No drone named {name}")
+        self.start_positions_y = np.linspace(start=self.search_space[2], stop=self.search_space[3],
+                                             num=len(self.drones))
 
     async def remove_drones(self, names: list[str]):
         for name in names:
@@ -550,7 +592,6 @@ class UAMMission(Mission):
 
     def mission_ready(self, drone):
         # Check connection
-        # TODO: What else should we check? Depends on stage...
         # Can't safely disarm in offboard due to landing issue, but do we want to stay armed whole demo?
         # Can't rearm
         return self.dm.drones[drone].is_connected
