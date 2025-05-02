@@ -1001,8 +1001,8 @@ class DroneMAVSDK(Drone):
         old_alt = self.position_ned[2]
         start_time = time.time()
         target_pos = self._get_pos_ned_yaw()
-        await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=target_pos[:3], yaw=target_pos[3]))
         if self._flightmode != FlightMode.OFFBOARD:
+            await self.set_setpoint(Waypoint(WayPointType.POS_VEL_NED, pos=target_pos[:3], yaw=target_pos[3]))
             await self.change_flight_mode("offboard")
         update_freq = 2
         try:
@@ -1017,7 +1017,7 @@ class DroneMAVSDK(Drone):
                 going_down = False
             old_alt = cur_alt
             target_pos[2] = cur_alt + 0.5
-            await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=target_pos[:3], yaw=target_pos[3]))
+            await self.set_setpoint(Waypoint(WayPointType.POS_VEL_NED, pos=target_pos[:3], vel=[0, 0, 0.3], yaw=target_pos[3]))
             await asyncio.sleep(1/update_freq)
         self.logger.info("Landed!")
         return True
