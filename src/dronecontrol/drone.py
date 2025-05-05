@@ -23,10 +23,10 @@ from mavsdk.camera import CameraError
 from dronecontrol.utils import dist_ned, dist_gps, relative_gps
 from dronecontrol.utils import parse_address, common_formatter, get_free_port
 from dronecontrol.mavpassthrough import MAVPassthrough
-from dronecontrol.navigation.core import WayPointType, Waypoint, TrajectoryGenerator, TrajectoryFollower
+from dronecontrol.navigation.core import WayPointType, Waypoint, TrajectoryGenerator, TrajectoryFollower, Fence
 from dronecontrol.navigation.directsetpointfollower import DirectSetpointFollower
 from dronecontrol.navigation.directtargetgenerator import DirectTargetGenerator
-
+from dronecontrol.navigation.gmp3generator import GMP3Generator
 
 import logging
 
@@ -40,7 +40,10 @@ _mav_server_file = os.path.join(_cur_dir, "mavsdk_server_bin.exe")
 #  be deactivated at all.
 # TODO: Have a look at the entire connection procedure, make some diagrams, plan everything out and refactor any
 #  issues nicely
-# TODO: Follower/generator manager system, similar to plugin system. Should probably break all out into their own thing
+# TODO: Follower/generator manager system, similar to plugin system. Should program some abstract base class for
+#  plugin/missions/fences/generators/followers to use
+
+# TODO: Allow multiple fences
 
 FlightMode = MAVSDKFlightMode
 FixType = MAVSDKFixType
@@ -84,6 +87,7 @@ class Drone(ABC, threading.Thread):
             self.add_handler(file_handler)
 
         self.position_update_rate: float = 10
+        self.fence: Fence | None = None
         self.trajectory_generator: TrajectoryGenerator | None = None
         self.trajectory_follower: TrajectoryFollower | None = None
 
@@ -98,22 +102,26 @@ class Drone(ABC, threading.Thread):
 
     async def _task_scheduler(self):
         while True:
-            while len(self.action_queue) > 0:
-                if self.is_paused:
-                    await asyncio.sleep(0.1)
+            try:
+                while len(self.action_queue) > 0:
+                    if self.is_paused:
+                        await asyncio.sleep(0.1)
+                    else:
+                        action, fut = self.action_queue.popleft()
+                        self.current_action = asyncio.create_task(action)
+                        try:
+                            result = await self.current_action
+                            fut.set_result(result)
+                            self.current_action = None
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            fut.set_exception(e)
                 else:
-                    action, fut = self.action_queue.popleft()
-                    self.current_action = asyncio.create_task(action)
-                    try:
-                        result = await self.current_action
-                        fut.set_result(result)
-                        self.current_action = None
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:
-                        fut.set_exception(e)
-            else:
-                await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)
+            except Exception as e:
+                self.logger.error("Encountered an exception in the task scheduler")
+                self.logger.debug(repr(e), exc_info=True)
 
     def schedule_task(self, coro) -> asyncio.Future:
         fut = asyncio.get_running_loop().create_future()
@@ -275,6 +283,17 @@ class Drone(ABC, threading.Thread):
     async def spin_at_rate(self, yaw_rate, duration, direction="cw") -> bool:
         pass
 
+    def set_fence(self, fence_type: type["Fence"], *args, **kwargs):
+        self.fence = fence_type(*args, **kwargs)
+
+    def check_waypoint(self, waypoint: "Waypoint"):
+        """ Check if a waypoint is valid and within any geofence (if such a fence is set)"""
+        try:
+            waypoint_valid = not self.fence or (self.fence and self.fence.check_waypoint_compatible(waypoint))
+        except Exception:
+            waypoint_valid = False
+        return waypoint_valid
+
     @abstractmethod
     async def set_setpoint(self, setpoint: "Waypoint") -> bool:
         pass
@@ -360,6 +379,8 @@ class DroneMAVSDK(Drone):
     # can be used.
 
     def __init__(self, name, mavsdk_server_address: str | None = None, mavsdk_server_port: int = 50051):
+        # TODO: Currently exceptions in this block are not logged to drone manager, as the handler is added only after
+        #  connecting.
         super().__init__(name)
         self.system: System | None = None
         self.server_addr = mavsdk_server_address
@@ -387,7 +408,12 @@ class DroneMAVSDK(Drone):
         self.position_update_rate = 5
 
         self.mav_conn = MAVPassthrough(loggername=f"{name}_MAVLINK", log_messages=True)
-        self.trajectory_generator = DirectTargetGenerator(self, self.logger, WayPointType.POS_NED)
+        try:
+            #self.trajectory_generator = GMP3Generator(self, 1/self.position_update_rate, self.logger, use_gps=False)
+            self.trajectory_generator = DirectTargetGenerator(self, self.logger, WayPointType.POS_NED, use_gps=False)
+        except Exception as e:
+            self.logger.error("Couldn't initialize trajectory generator due to an exception!")
+            self.logger.debug(repr(e), exc_info=True)
         self.trajectory_follower = DirectSetpointFollower(self, self.logger, 1/self.position_update_rate,
                                                           WayPointType.POS_VEL_NED)
 
@@ -526,6 +552,7 @@ class DroneMAVSDK(Drone):
         self._running_tasks.append(asyncio.create_task(self._att_check()))
         self._running_tasks.append(asyncio.create_task(self._battery_check()))
         self._running_tasks.append(asyncio.create_task(self._status_check()))
+        self._running_tasks.append(asyncio.create_task(self._ensure_message_rates()))
 
     async def _configure_message_rates(self) -> None:
         try:
@@ -553,6 +580,12 @@ class DroneMAVSDK(Drone):
         else:
             async for state in self.system.core.connection_state():
                 self._is_connected = state.is_connected
+
+    async def _ensure_message_rates(self):
+        # Send our desired message rates every so often to ensure
+        while True:
+            await self._configure_message_rates()
+            await asyncio.sleep(5)
 
     async def _arm_check(self):
         async for arm in self.system.telemetry.armed():
@@ -721,8 +754,6 @@ class DroneMAVSDK(Drone):
     async def change_flight_mode(self, flightmode: str, timeout: float = 5):
         self.logger.info(f"Changing flight mode to {flightmode}")
         await super().change_flight_mode(flightmode)
-        result = False
-        target_flight_mode = None
         start_time = time.time()
         if flightmode == "hold":
             result = await self._error_wrapper(self.system.action.hold, ActionError)
@@ -925,6 +956,7 @@ class DroneMAVSDK(Drone):
                 await self.set_setpoint(Waypoint(WayPointType.POS_NED, pos=cur_pos, yaw=cur_yaw))
             await self.change_flight_mode("offboard")
 
+        # Determine target waypoint and send it to trajectory generator
         if use_gps:
             if not self.trajectory_generator.CAN_DO_GPS or not self.trajectory_follower.CAN_DO_GPS:
                 raise RuntimeError("Trajectory generator can't use GPS coordinates!")
@@ -934,8 +966,12 @@ class DroneMAVSDK(Drone):
             self.trajectory_generator.use_gps = False
         self.trajectory_generator.set_target(target)
 
+        # Create trajectory and activate follower algorithm if not already active
         self.logger.debug("Creating trajectory...")
-        await self.trajectory_generator.create_trajectory()
+        have_trajectory = await self.trajectory_generator.create_trajectory()
+        if not have_trajectory:
+            self.logger.warning("The trajectory generator couldn't generate a trajectory!")
+            return False
         if not self.trajectory_follower.is_active:
             self.logger.debug("Starting follower algorithm...")
             self.trajectory_follower.activate()

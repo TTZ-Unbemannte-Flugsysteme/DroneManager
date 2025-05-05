@@ -108,6 +108,22 @@ class Waypoint:
         return Waypoint(WayPointType.POS_GLOBAL, gps=np.asarray(new_gps), yaw=self.yaw)
 
 
+class Fence(ABC):
+    """ Abstract base class for geo-fence type classes and methods.
+
+    """
+    def __init__(self, *args, **kwargs):
+        self.active = True
+
+    @abstractmethod
+    def check_waypoint_compatible(self, point: Waypoint) -> bool:
+        """ Should return True if the waypoint fits within the fence, and false otherwise.
+
+        "Fits within" is taken broadly here, a fence can be inclusive, exclusive, around a dynamic obstacle, or
+         anything else. As long as True is returned when the waypoint is "good" and False otherwise, it works."""
+        pass
+
+
 class TrajectoryGenerator(ABC):
     """ Abstract base class for trajectory generators."""
 
@@ -219,8 +235,6 @@ class TrajectoryFollower(ABC):
                             if have_waypoints:
                                 self.logger.debug("Generator no longer producing waypoints, using current position")
                                 # If we had waypoints, but lost them, use the current position as a dummy waypoint
-                                have_waypoints = False
-                                using_current_position = True
                             else:  # Never had a waypoint
                                 self.logger.debug("Don't have any waypoints from the generator yet, using current position")
                                 using_current_position = True
@@ -231,6 +245,7 @@ class TrajectoryFollower(ABC):
                         else:
                             #self.logger.debug("Still using current position...")
                             waypoint = dummy_waypoint
+                        have_waypoints = False
                     else:
                         have_waypoints = True
                         using_current_position = False

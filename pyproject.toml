@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "DroneManager"
-version = "0.1"
+version = "0.2"
 authors = [
     {name="Dominik Mattern", email="dominik.mattern@thi.de"},
     {name="Babak Salamat", email="babak.salamat@thi.de"},
@@ -14,10 +14,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "textual",
+    "textual==2.1.2",
     "rich",
-    "mavsdk",
-    "pymavlink",
+    "mavsdk==3.0.1",
+    "pymavlink==2.4.42",
     "pyserial",
     "haversine",
     "scipy"]
