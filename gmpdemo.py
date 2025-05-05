@@ -4,6 +4,8 @@ import traceback
 from dronecontrol.dronemanager import DroneManager
 from dronecontrol.drone import DroneMAVSDK
 
+# TODO: Turn into mission
+
 
 async def main():
     # Connect to drone
@@ -25,7 +27,7 @@ async def main():
         print("Taking off and flying to starting position")
         await dm.arm("tom")
         await dm.takeoff("tom", altitude=1.5)
-        await dm.fly_to("tom", -5, 0, -1.5, 0)
+        await dm.fly_to("tom", local=[-5, 0, -1.5], yaw=0)
         key = None
         while key not in ["y", "Y", "n", "N"]:
             key = input("Connected to drone, press y to continue or n to abort")
@@ -34,7 +36,7 @@ async def main():
             if key in ["n", "N"]:
                 return
         # fly to end position.
-        await dm.fly_to("tom", 5, 0, -1.5, 0)
+        await dm.fly_to("tom", local=[5, 0, -1.5], yaw=0)
         await dm.land("tom")
     except Exception:
         print(traceback.format_exception())
