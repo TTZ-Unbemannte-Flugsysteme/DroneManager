@@ -10,12 +10,20 @@ from collections.abc import Collection
 from asyncio.exceptions import TimeoutError, CancelledError
 
 from dronecontrol.drone import Drone, parse_address
+from dronecontrol.navigation.rectlocalfence import RectLocalFence
 from dronecontrol.utils import common_formatter, get_free_port
 from dronecontrol.navigation.core import Waypoint
 from dronecontrol.plugin import Plugin
 
 import logging
 
+
+# TODO: Fence class discovery
+FENCES = {
+    "localrect": RectLocalFence,
+}
+
+# TODO: Trajectory generator/follower discovery and setting/unsetting functions, trajectory follower deactivation
 
 pane_formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s - %(message)s', datefmt="%H:%M:%S")
 
@@ -31,7 +39,6 @@ DRONE_DICT = {
 
 
 class DroneManager:
-    # TODO: Figure out how to get voxl values from the drone
     # TODO: Handle MAVSDK crashes - Not sure at all what causes them
     # TODO: Refactor functions other than fly_to to also use the list wrapping convenience
     # TODO: Refactor the drone functions to be built dynamically from the droneclass, i.e. fly_to, move, yaw_to
@@ -40,7 +47,6 @@ class DroneManager:
     def __init__(self, drone_class, logger=None, log_to_console=False, console_log_level=logging.DEBUG):
         self.drone_class = drone_class
         self.drones: dict[str, Drone] = {}
-        self.running_tasks = set()
         # self.drones acts as the list/manager of connected drones, any function that writes or deletes items should
         # protect those writes/deletes with this lock. Read only functions can ignore it.
         self.drone_lock = asyncio.Lock()
@@ -78,7 +84,7 @@ class DroneManager:
     async def connect_to_drone(self,
                                name: str,
                                mavsdk_server_address: str | None,
-                               mavsdk_server_port: int,
+                               mavsdk_server_port: int | None,
                                drone_address: str,
                                timeout: float):
         try:
@@ -176,6 +182,9 @@ class DroneManager:
         return await self._multiple_drone_action(action, [name], start_string, *args, schedule=schedule, **kwargs)
 
     async def _multiple_drone_action(self, action, names, start_string, *args, schedule=False, **kwargs):
+        # Convenience check to avoid isues when using multiple drone functions with only a single drone.
+        if isinstance(names, str):
+            names = [names]
         try:
             coros = [action(self.drones[name], *args, **kwargs) for name in names]
             if schedule:
@@ -262,6 +271,21 @@ class DroneManager:
     async def land(self, names, schedule=False):
         await self._multiple_drone_action(self.drone_class.land, names,
                                           "Landing drone(s) {}.", schedule=schedule)
+
+    def set_fence(self, names, n_lower, n_upper, e_lower, e_upper, height):
+        """ Set a fence on drones"""
+        if isinstance(names, str):
+            names = [names]
+        try:
+            for name in names:
+                try:
+                    self.drones[name].set_fence(RectLocalFence, n_lower, n_upper, e_lower, e_upper, height)
+                    self.logger.info(f"Set fence {self.drones[name].fence} on {name}")
+                except KeyError:
+                    self.logger.warning(f"No drone named {name}!")
+        except Exception as e:
+            self.logger.error("Couldn't set fence due to an exception")
+            self.logger.debug(repr(e), exc_info=True)
 
     def pause(self, names):
         self.logger.info(f"Pausing drone(s) {names}")

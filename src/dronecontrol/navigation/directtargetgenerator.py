@@ -15,7 +15,7 @@ class DirectTargetGenerator(TrajectoryGenerator):
         self.logger.debug(f"Initialized trajectory generator {self.__class__.__name__}:\n   {attr_string}")
 
     async def create_trajectory(self):
-        pass
+        return True
 
     def next(self):
         """ Should return None if the generator isn't ready to produce waypoints yet."""

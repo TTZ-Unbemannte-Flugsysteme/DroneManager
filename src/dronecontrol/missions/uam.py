@@ -11,7 +11,6 @@ from dronecontrol.plugins.mission import Mission
 from dronecontrol.utils import dist_ned
 from dronecontrol.navigation.core import Waypoint, WayPointType
 
-# TODO: Add fence to every drone (where has fence class gone?)
 # TODO: Take circling function and put it into drone orbit function
 # TODO: Better ready check, should consider position and status of each drone for the calling stage.
 
@@ -67,7 +66,7 @@ class UAMMission(Mission):
         # Static parameters for mission definition
         self.n_drones_max = 3
         self.current_stage = UAMStages.Uninitialized
-        self.flight_area = [-3.75, 3.75, -1.75, 1.75, 2]
+        self.flight_area = [-3.75, 3.75, -1.75, 1.75, 4]
         self.search_space = [-3, 3, -1, 1]
         self.start_positions_y: dict[str, float] = {}
         self.start_position_x = 3.0
@@ -309,7 +308,7 @@ class UAMMission(Mission):
                     poi_tasks.append(asyncio.create_task(self._poi_task(drone)))
                 else:
                     poi_tasks.append(asyncio.create_task(self._drone_rtb(drone, self.start_positions_y[drone],
-                                                                         self.swap_altitude)))
+                                                                         self.swap_altitude, wait=1)))
             await asyncio.gather(*poi_tasks)
             self._observing_drone = self._found_poi
             self._found_poi = None
@@ -391,12 +390,15 @@ class UAMMission(Mission):
                     await asyncio.sleep(self.pause_between_moves)
                     await self.dm.yaw_to(swap_drone, yaw=self.start_yaw, local=self.holding_position,
                                          yaw_rate=self.yaw_rate, schedule=False, tol=self.yaw_tolerance)
+                    self.logger.info(f"{swap_drone} reached holding position, waiting on observing drone!")
 
                     # Wait until both drones are in position
                     while not self._reached_departure:
                         await asyncio.sleep(1/self.update_rate)
+                    self.logger.info("Ready to perform swap!")
 
                     # Fly new drone to arrival position
+                    self.logger.info(f"Moving {swap_drone} to arrival position")
                     x, y, observe_yaw = self._calculate_xy_yaw(self.arrival_angle)
                     fly_to_arrival_yaw = self._yaw_to_point(swap_drone, [x, y])
                     await self.dm.yaw_to(swap_drone, yaw=fly_to_arrival_yaw, yaw_rate=self.yaw_rate,
@@ -408,6 +410,7 @@ class UAMMission(Mission):
 
                     # Both drones now watching POI on opposite ends of the POI
                     # Start flying old observing drone back
+                    self.logger.info(f"{self._observing_drone} returning to base")
                     rtb_task = asyncio.create_task(self._drone_rtb(self._observing_drone,
                                                                    self.start_positions_y[self._observing_drone],
                                                                    self.swap_altitude))
@@ -418,6 +421,7 @@ class UAMMission(Mission):
                         await asyncio.sleep(1/self.update_rate)
 
                     # Update relevant attributes and start circling new drone
+                    self.logger.info(f"Starting observation with {swap_drone}")
                     self._observing_drone = swap_drone
                     self._stop_circling = False
                     self._reached_departure = False
@@ -433,11 +437,12 @@ class UAMMission(Mission):
             self.current_stage = UAMStages.Uninitialized
 
     def _get_drones_by_batterylevel(self):
+        """ Note that the stored battery level is negative, as the lowest value is returned by the priority queue."""
         drones_by_batterylevel = PriorityQueue()
         for drone in self.drones:
             if drone == self._observing_drone:
                 continue
-            drones_by_batterylevel.put((self.batteries[drone].level, drone))
+            drones_by_batterylevel.put((-self.batteries[drone].level, drone))
         return drones_by_batterylevel
 
     async def _swap_launch_new_drone(self) -> str:
@@ -447,10 +452,10 @@ class UAMMission(Mission):
         swap_drone = None
         while not swap_drone:
             try:
-                bat_level, candidate = drones_by_batterylevel.get()
+                _, candidate = drones_by_batterylevel.get()
             except Empty:
                 drones_by_batterylevel = self._get_drones_by_batterylevel()
-                bat_level, candidate = drones_by_batterylevel.get()
+                _, candidate = drones_by_batterylevel.get()
             self.logger.info(f"Trying to do swap with {candidate}")
             # Launch the new drone
             armed = await self.dm.arm([candidate])
@@ -502,7 +507,7 @@ class UAMMission(Mission):
         assert self.ready()
         try:
             # Do the thing, one after another
-            for drone in self.flying_drones:
+            for drone in list(self.flying_drones):
                 await self._drone_rtb(drone, self.start_positions_y[drone], self.flight_altitude)
             self.current_stage = UAMStages.Start
         except Exception as e:
@@ -510,7 +515,8 @@ class UAMMission(Mission):
             self.logger.debug(repr(e), exc_info=True)
             self.current_stage = UAMStages.Uninitialized
 
-    async def _drone_rtb(self, drone, start_position_y, altitude):
+    async def _drone_rtb(self, drone, start_position_y, altitude, wait=0):
+        await asyncio.sleep(wait)
         return_yaw = self._yaw_to_point(drone, [self.start_position_x, start_position_y])
         swap_alt_pos = self.dm.drones[drone].position_ned
         swap_alt_pos[2] = -altitude
@@ -612,6 +618,7 @@ class UAMMission(Mission):
         for name in names:
             try:
                 self.drones[name] = self.dm.drones[name]
+                self.dm.set_fence(name, *self.flight_area)
                 self.batteries[name] = FakeBattery()
             except KeyError:
                 self.logger.error(f"No drone named {name}")
